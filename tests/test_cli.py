@@ -150,3 +150,19 @@ def test_invalid_numbers_exit2(clip_169, opt):
     with pytest.raises(SystemExit) as exc:
         main([str(clip_169), *opt])
     assert exc.value.code == 2
+
+
+def test_preview_renders_only_selected_frames(clip_169, tmp_path, monkeypatch):
+    from vid2ascii.render import Renderer
+
+    calls = []
+    original = Renderer.render
+
+    def counting_render(self, *args, **kwargs):
+        calls.append(1)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Renderer, "render", counting_render)
+    out = tmp_path / "out.mp4"
+    assert main([str(clip_169), "-o", str(out), "--preview", "3", "--cols", "40"]) == 0
+    assert len(calls) == 3

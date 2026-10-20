@@ -80,14 +80,19 @@ def _render_frames(frames, renderer, envelope, n_frames):
         yield i, renderer.render(cells, strength)
 
 
-def _write_previews(rendered, n_frames, count, output_path):
+def _write_previews(frames, renderer, envelope, n_frames, count, output_path):
+    """Render only the N evenly spaced frames and save them as PNGs."""
     indices = np.round(np.linspace(0, n_frames - 1, count)).astype(int)
     written = 0
-    for i, frame in rendered:
-        for j in np.flatnonzero(indices == i):
-            name = f"{output_path.stem}_preview_{j + 1:02d}.png"
-            Image.fromarray(frame).save(output_path.parent / name)
-            written += 1
+    for i, cells in enumerate(frames):
+        targets = np.flatnonzero(indices == i)
+        if targets.size:
+            strength = float(envelope[i]) if envelope is not None else 0.0
+            frame = renderer.render(cells, strength)
+            for j in targets:
+                name = f"{output_path.stem}_preview_{j + 1:02d}.png"
+                Image.fromarray(frame).save(output_path.parent / name)
+                written += 1
         if i >= indices[-1]:
             break
     return written
@@ -166,7 +171,8 @@ def convert(input_path: Path, output_path: Path, args: argparse.Namespace) -> Pa
     rendered = _render_frames(frames, renderer, envelope, n_frames)
     try:
         if args.preview:
-            written = _write_previews(rendered, n_frames, args.preview, output_path)
+            written = _write_previews(frames, renderer, envelope, n_frames, args.preview,
+                                      output_path)
             if written == 0:
                 raise Vid2AsciiError(f"ffmpeg produced no frames for {input_path}")
             print(f"{written} previews in {output_path.parent} "
