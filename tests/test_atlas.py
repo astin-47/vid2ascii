@@ -57,3 +57,12 @@ def test_atlas_shape_and_density():
 def test_blocks_atlas_builds():
     a = build_atlas(CHARSETS["blocks"], find_font(), 16, 30)
     assert a.shape == (5, 30, 16)
+
+
+def test_corrupt_font_raises_font_error(tmp_path):
+    bad = tmp_path / "bad.ttf"
+    bad.write_text("not a font")
+    with pytest.raises(FontError, match="cannot load font"):
+        font_cell_ratio(str(bad))
+    with pytest.raises(FontError, match="cannot load font"):
+        build_atlas(" .", str(bad), 8, 16)

@@ -46,9 +46,16 @@ def find_font(path: str | None = None) -> str:
     raise FontError("no monospace font found; use --font PATH")
 
 
+def _load_font(font_path: str, size: int) -> ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.truetype(font_path, size)
+    except OSError as exc:
+        raise FontError(f"cannot load font: {font_path}") from exc
+
+
 def font_cell_ratio(font_path: str) -> tuple[float, float]:
     """(advance_width, line_height) of the font at size 100."""
-    font = ImageFont.truetype(font_path, 100)
+    font = _load_font(font_path, 100)
     ascent, descent = font.getmetrics()
     return font.getlength("M"), float(ascent + descent)
 
@@ -61,9 +68,9 @@ def _fits(font: ImageFont.FreeTypeFont, cw: int, ch: int) -> bool:
 def build_atlas(chars: str, font_path: str, cw: int, ch: int) -> np.ndarray:
     """Return float32 (len(chars), ch, cw) coverage masks in [0, 1]."""
     size = 1
-    while _fits(ImageFont.truetype(font_path, size + 1), cw, ch):
+    while _fits(_load_font(font_path, size + 1), cw, ch):
         size += 1
-    font = ImageFont.truetype(font_path, size)
+    font = _load_font(font_path, size)
     ascent, descent = font.getmetrics()
     x = (cw - font.getlength("M")) / 2
     y = (ch - (ascent + descent)) / 2
