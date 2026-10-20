@@ -103,3 +103,9 @@ def test_render_perf():
     for _ in range(10):
         r.render(frame)
     assert (time.perf_counter() - t) / 10 < 0.05
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf"])
+def test_autocontrast_rejects_non_finite(bad):
+    with pytest.raises(ValueError):
+        AutoContrast(bad)

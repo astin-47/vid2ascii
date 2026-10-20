@@ -1,5 +1,7 @@
 """Pure-numpy renderer: cell colors -> full-size ASCII frame."""
 
+import math
+
 import numpy as np
 
 COLORS = {"green": (0x33, 0xFF, 0x66), "amber": (0xFF, 0xB0, 0x00), "mono": (255, 255, 255)}
@@ -21,6 +23,8 @@ class AutoContrast:
             self.mode = float(mode)
         except (TypeError, ValueError):
             raise ValueError(f"invalid contrast: {mode!r}") from None
+        if not math.isfinite(self.mode):
+            raise ValueError(f"invalid contrast: {mode!r}")
 
     def __call__(self, lum: np.ndarray) -> np.ndarray:
         if self.mode == "none":
