@@ -131,7 +131,8 @@ python -m vid2ascii clip.mp4 --font C:/Windows/Fonts/consola.ttf
 
 ## Output size and aspect
 
-The long side of the output is 1920 pixels. By default the output has the same
+The long side of the output is about 1920 px (it varies a little with `--cols`
+because character cells are whole pixels). By default the output has the same
 aspect ratio as the input. With `--aspect` the source is center-cropped to fill
 the chosen shape (`reel` 9:16, `square` 1:1, `wide` 16:9, `cinematic` 2.39:1,
 or any `WxH` such as `4x5`) rather than letterboxed. `--cols` sets how many

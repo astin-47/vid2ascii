@@ -58,7 +58,7 @@ No temp frame folders. Every stage streams through pipes.
   - Rows come from the realized width: `rows = max(1, round(cols*cw / aspect / ch))`.
     If `rows*ch` is odd, `ch` is incremented by one and `rows` recomputed, so
     evenness is reached by minimal adjustment rather than rounding every cell up.
-  - Output size = `cols*cw × rows*ch`, always even so libx264 accepts it, and
+  - Output size = `cols*cw x rows*ch`, always even so libx264 accepts it, and
     within half a row of the requested aspect.
   - The CLI crops the source to the realized aspect `out_w / out_h`, not the
     requested one, so the picture is never stretched.
