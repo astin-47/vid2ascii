@@ -24,10 +24,6 @@ class Layout:
     out_h: int
 
 
-def _even_up(x: int) -> int:
-    return x + (x % 2)
-
-
 def _even_down(x: int) -> int:
     return x - (x % 2)
 
@@ -55,10 +51,16 @@ def compute_layout(aspect: float, cols: int, font_w: float, font_h: float,
         w, h = long_side, long_side / aspect
     else:
         w, h = long_side * aspect, long_side
-    cw = _even_up(max(4, round(w / cols)))
-    ch = _even_up(max(4, round(cw * font_h / font_w)))
-    rows = max(1, round(h / ch))
-    return Layout(cols, rows, cw, ch, cols * cw, rows * ch)
+    cw = max(4, round(w / cols))
+    if cols % 2 and cw % 2:
+        cw += 1  # keep cols*cw even
+    ch = max(4, round(cw * font_h / font_w))
+    real_w = cols * cw
+    rows = max(1, round(real_w / aspect / ch))
+    if (rows * ch) % 2:
+        ch += 1  # keep rows*ch even
+        rows = max(1, round(real_w / aspect / ch))
+    return Layout(cols, rows, cw, ch, real_w, rows * ch)
 
 
 def crop_filter(src_w: int, src_h: int, aspect: float) -> str:

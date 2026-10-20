@@ -51,12 +51,17 @@ No temp frame folders. Every stage streams through pipes.
 - `compute_layout(aspect, cols, cell_w, cell_h, long_side=1920) -> Layout`:
   - target W,H: the long side is 1920 and the other side is 1920/aspect (or
     1920*aspect).
-  - The pixel cell width is `cw = max(4, round(W / cols))`. The cell height is
-    `ch = round(cw * font_cell_h / font_cell_w)`, which corrects for characters
-    being taller than wide. Both are rounded to even numbers.
-  - `rows = max(1, round(H / ch))`.
-  - Output size = `cols*cw Ã— rows*ch`. It is always even because cw and ch are
-    even, so libx264 accepts it.
+  - The pixel cell width is `cw = max(4, round(W / cols))`, bumped by one if
+    `cols` is odd and `cw` is odd (so `cols*cw` is even). The cell height is
+    `ch = max(4, round(cw * font_cell_h / font_cell_w))`, which corrects for
+    characters being taller than wide.
+  - Rows come from the realized width: `rows = max(1, round(cols*cw / aspect / ch))`.
+    If `rows*ch` is odd, `ch` is incremented by one and `rows` recomputed, so
+    evenness is reached by minimal adjustment rather than rounding every cell up.
+  - Output size = `cols*cw × rows*ch`, always even so libx264 accepts it, and
+    within half a row of the requested aspect.
+  - The CLI crops the source to the realized aspect `out_w / out_h`, not the
+    requested one, so the picture is never stretched.
   - `Layout` holds cols, rows, cw, ch, out_w, out_h.
 - `crop_filter(src_w, src_h, aspect) -> str`: a center-crop expression that
   produces the target aspect (an empty string when the aspect already matches

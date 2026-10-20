@@ -167,7 +167,8 @@ def convert(input_path: Path, output_path: Path, args: argparse.Namespace) -> Pa
     envelope = (_beat_envelope(input_path, info, start, dur, n_frames, fps)
                 if args.beat else None)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    frames = iter_frames(input_path, info, start, dur, fps, layout, aspect)
+    frames = iter_frames(input_path, info, start, dur, fps, layout,
+                         layout.out_w / layout.out_h)
     rendered = _render_frames(frames, renderer, envelope, n_frames)
     try:
         if args.preview:

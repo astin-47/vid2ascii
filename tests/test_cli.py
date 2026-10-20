@@ -166,3 +166,28 @@ def test_preview_renders_only_selected_frames(clip_169, tmp_path, monkeypatch):
     out = tmp_path / "out.mp4"
     assert main([str(clip_169), "-o", str(out), "--preview", "3", "--cols", "40"]) == 0
     assert len(calls) == 3
+
+
+def test_aspect_reel_default_cols(clip_169, tmp_path):
+    out = tmp_path / "out.mp4"
+    assert main([str(clip_169), "-o", str(out), "--aspect", "reel", "--duration", "1"]) == 0
+    video = _video(ffprobe_json(out))
+    assert abs(video["width"] / video["height"] - 0.5625) <= 0.02
+
+
+def test_crop_uses_realized_aspect(clip_169, tmp_path, monkeypatch):
+    import vid2ascii.cli as cli
+
+    seen = []
+    original = cli.iter_frames
+
+    def recording(path, info, start, duration, fps, layout, aspect):
+        seen.append((layout, aspect))
+        return original(path, info, start, duration, fps, layout, aspect)
+
+    monkeypatch.setattr(cli, "iter_frames", recording)
+    out = tmp_path / "out.mp4"
+    assert main([str(clip_169), "-o", str(out), "--aspect", "reel", "--preview", "1"]) == 0
+    layout, aspect = seen[0]
+    assert aspect == pytest.approx(layout.out_w / layout.out_h)
+    assert aspect != pytest.approx(9 / 16, abs=1e-9)

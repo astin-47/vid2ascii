@@ -27,7 +27,6 @@ def test_parse_aspect_bad(spec):
 def test_layout_169():
     lay = compute_layout(16 / 9, 120, 55, 100)
     assert lay.cols == 120
-    assert lay.cw % 2 == 0 and lay.ch % 2 == 0
     assert lay.out_w % 2 == 0 and lay.out_h % 2 == 0
     assert abs(lay.out_w / lay.out_h - 16 / 9) < 0.05
     assert lay.ch > lay.cw
@@ -47,6 +46,21 @@ def test_char_aspect_correction(fw):
     assert abs(lay.rows - lay.cols * lay.cw / (lay.ch * aspect)) <= 1
     assert lay.ch > lay.cw
     assert abs(lay.ch / lay.cw - fh / fw) < 0.15
+
+
+ASPECT_CASES = [16 / 9, 9 / 16, 1.0, 2.39, 0.8]
+COLS_CASES = [40, 60, 80, 120, 160, 200, 121]
+
+
+@pytest.mark.parametrize("aspect", ASPECT_CASES)
+@pytest.mark.parametrize("cols", COLS_CASES)
+def test_layout_exact_aspect(aspect, cols):
+    lay = compute_layout(aspect, cols, 55.0, 101.0)
+    assert lay.out_w % 2 == 0 and lay.out_h % 2 == 0
+    assert lay.out_w == lay.cols * lay.cw and lay.out_h == lay.rows * lay.ch
+    assert abs((lay.out_w / lay.out_h) / aspect - 1) <= 0.5 / lay.rows + 0.005
+    assert abs(max(lay.out_w, lay.out_h) / 1920 - 1) <= 0.15
+    assert lay.ch > lay.cw
 
 
 def test_layout_bad_args():
