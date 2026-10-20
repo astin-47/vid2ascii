@@ -1,5 +1,13 @@
 """Frame geometry (pure math) and, later, ffmpeg probing/decoding."""
+import json
+import shutil
+import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass
+
+import numpy as np
+
+from . import FFmpegNotFound, InputError
 
 # --- Pure layout math -------------------------------------------------------
 
@@ -60,3 +68,100 @@ def crop_filter(src_w: int, src_h: int, aspect: float) -> str:
     if src_aspect > aspect:
         return f"crop={_even_down(round(src_h * aspect))}:{src_h}"
     return f"crop={src_w}:{_even_down(round(src_w / aspect))}"
+
+
+# --- ffprobe / ffmpeg decoding ----------------------------------------------
+
+
+def require_ffmpeg() -> None:
+    missing = [t for t in ("ffmpeg", "ffprobe") if shutil.which(t) is None]
+    if missing:
+        raise FFmpegNotFound(
+            f"{' and '.join(missing)} not found on PATH. Install ffmpeg: "
+            "Windows: winget install ffmpeg; macOS: brew install ffmpeg; "
+            "Linux: apt install ffmpeg")
+
+
+@dataclass(frozen=True)
+class VideoInfo:
+    width: int
+    height: int
+    fps: float
+    duration: float
+    has_audio: bool
+
+
+def _parse_rate(text) -> float:
+    try:
+        num, _, den = str(text).partition("/")
+        value = float(num) / float(den) if den else float(num)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+    return value if value > 0 else 0.0
+
+
+def _parse_duration(text) -> float:
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if value > 0 else 0.0
+
+
+def probe(path) -> VideoInfo:
+    err = InputError(f"cannot read video: {path}")
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_streams", "-show_format",
+             "-of", "json", str(path)],
+            capture_output=True, check=False)
+    except OSError as exc:
+        raise err from exc
+    if result.returncode != 0:
+        raise err
+    try:
+        data = json.loads(result.stdout)
+    except ValueError as exc:
+        raise err from exc
+    streams = data.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video is None:
+        raise err
+    width, height = video.get("width") or 0, video.get("height") or 0
+    if width <= 0 or height <= 0:
+        raise err
+    fps = (_parse_rate(video.get("avg_frame_rate"))
+           or _parse_rate(video.get("r_frame_rate")))
+    duration = (_parse_duration(data.get("format", {}).get("duration"))
+                or _parse_duration(video.get("duration")))
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    return VideoInfo(int(width), int(height), fps, duration, has_audio)
+
+
+def iter_frames(path, info: VideoInfo, start: float, duration: float,
+                fps: float, layout: Layout, aspect: float) -> Iterator[np.ndarray]:
+    filters = [f"fps={fps}"]
+    crop = crop_filter(info.width, info.height, aspect)
+    if crop:
+        filters.append(crop)
+    filters += [f"scale={layout.cols}:{layout.rows}:flags=area", "format=rgb24"]
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", str(start),
+           "-i", str(path), "-t", str(duration), "-an",
+           "-vf", ",".join(filters), "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "pipe:1"]
+    frame_bytes = layout.rows * layout.cols * 3
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            bufsize=frame_bytes * 4)
+    try:
+        while True:
+            buf = proc.stdout.read(frame_bytes)
+            if len(buf) < frame_bytes:
+                break
+            yield np.frombuffer(buf, dtype=np.uint8).reshape(
+                layout.rows, layout.cols, 3)
+    finally:
+        proc.stdout.close()
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
