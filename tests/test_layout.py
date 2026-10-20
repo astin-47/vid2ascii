@@ -40,10 +40,13 @@ def test_layout_reel():
     assert abs(max(lay.out_w, lay.out_h) - 1920) <= lay.ch
 
 
-def test_char_aspect_correction():
-    aspect, cols, fw, fh = 16 / 9, 120, 50, 100
+@pytest.mark.parametrize("fw", [55, 60])
+def test_char_aspect_correction(fw):
+    aspect, cols, fh = 16 / 9, 120, 100
     lay = compute_layout(aspect, cols, fw, fh)
-    assert abs(lay.rows - cols / aspect * fw / fh) <= 1
+    assert abs(lay.rows - lay.cols * lay.cw / (lay.ch * aspect)) <= 1
+    assert lay.ch > lay.cw
+    assert abs(lay.ch / lay.cw - fh / fw) < 0.15
 
 
 def test_layout_bad_args():
