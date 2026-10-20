@@ -2,6 +2,7 @@
 
 import argparse
 import math
+import os
 import subprocess
 import sys
 import threading
@@ -99,13 +100,16 @@ def _write_previews(frames, renderer, envelope, n_frames, count, output_path):
 
 
 def _encode(rendered, output_path, input_path, info, layout, fps, start, dur, n_frames):
+    """Encode into a .partial sibling and move it into place only on success."""
+    partial = output_path.with_name(output_path.stem + ".partial" + output_path.suffix)
     cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{layout.out_w}x{layout.out_h}", "-r", str(fps), "-i", "-"]
     if info.has_audio:
-        cmd += ["-ss", str(start), "-t", str(dur), "-i", str(input_path),
+        cmd += ["-ss", str(start), "-t", str(dur), "-protocol_whitelist", "file,pipe",
+                "-i", str(input_path),
                 "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-            "-shortest", "-movflags", "+faststart", str(output_path)]
+            "-shortest", "-movflags", "+faststart", str(partial)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE)
     tail = deque(maxlen=15)
@@ -119,29 +123,37 @@ def _encode(rendered, output_path, input_path, info, layout, fps, start, dur, n_
     count = 0
     broken = False
     try:
-        with tqdm(total=n_frames, unit="frame", file=sys.stderr, disable=None) as bar:
-            for _, frame in rendered:
-                try:
-                    proc.stdin.write(frame.data)
-                except OSError:  # BrokenPipeError, or EINVAL on Windows
-                    broken = True
-                    break
-                count += 1
-                bar.update(1)
-    finally:
         try:
-            proc.stdin.close()
-        except OSError:
-            broken = True
-        if count == 0 and proc.poll() is None:
-            proc.kill()
-        proc.wait()
-        reader.join()
-    details = "\n".join(tail)
-    if count == 0 and not broken:
-        raise Vid2AsciiError(f"ffmpeg produced no frames for {input_path}")
-    if broken or proc.returncode != 0:
-        raise Vid2AsciiError(f"ffmpeg encoding failed for {output_path}:\n{details}")
+            with tqdm(total=n_frames, unit="frame", file=sys.stderr, disable=None) as bar:
+                for _, frame in rendered:
+                    try:
+                        proc.stdin.write(frame.data)
+                    except OSError:  # BrokenPipeError, or EINVAL on Windows
+                        broken = True
+                        break
+                    count += 1
+                    bar.update(1)
+        except BaseException:
+            proc.kill()  # abort: do not let ffmpeg finalize a truncated file
+            raise
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                broken = True
+            if count == 0 and proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            reader.join()
+        details = "\n".join(tail)
+        if count == 0 and not broken:
+            raise Vid2AsciiError(f"ffmpeg produced no frames for {input_path}")
+        if broken or proc.returncode != 0:
+            raise Vid2AsciiError(f"ffmpeg encoding failed for {output_path}:\n{details}")
+        os.replace(partial, output_path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     return count
 
 
@@ -149,11 +161,16 @@ def convert(input_path: Path, output_path: Path, args: argparse.Namespace) -> Pa
     input_path, output_path = Path(input_path), Path(output_path)
     if not args.preview and output_path.exists() and not args.overwrite:
         raise InputError(f"output exists: {output_path} (use --overwrite)")
+    if not input_path.is_file():
+        raise InputError(f"input not found: {input_path}")
     info = probe(input_path)
     start = args.start
-    dur = min(MAX_DURATION, args.duration or math.inf, info.duration - start)
-    if dur <= 0:
-        raise InputError("--start is past the end of the video")
+    if info.duration > 0:
+        dur = min(MAX_DURATION, args.duration or math.inf, info.duration - start)
+        if dur <= 0:
+            raise InputError("--start is past the end of the video")
+    else:  # duration unknown (e.g. a piped WebM): the decoder stops at EOF
+        dur = min(MAX_DURATION, args.duration or MAX_DURATION)
 
     chars = resolve_charset(args.charset)
     aspect = parse_aspect(args.aspect, info.width, info.height)
@@ -198,8 +215,8 @@ def _convert_folder(folder: Path, args: argparse.Namespace) -> int:
     for video in videos:
         try:
             convert(video, out_dir / f"{video.stem}_ascii.mp4", args)
-        except Vid2AsciiError as exc:
-            print(f"error: {video.name}: {exc}", file=sys.stderr)
+        except Exception as exc:
+            print(f"{video.name}: error: {exc}", file=sys.stderr)
             failures.append(video.name)
     print(f"converted {len(videos) - len(failures)}/{len(videos)} files into {out_dir}")
     if failures:
@@ -212,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         require_ffmpeg()
         src = Path(args.input)
+        if not (src.is_file() or src.is_dir()):
+            raise InputError(f"input not found: {args.input}")
         if src.is_dir():
             return _convert_folder(src, args)
         out = Path(args.output) if args.output else src.with_name(f"{src.stem}_ascii.mp4")
@@ -220,3 +239,6 @@ def main(argv: list[str] | None = None) -> int:
     except (Vid2AsciiError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130

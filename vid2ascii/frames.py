@@ -1,4 +1,4 @@
-"""Frame geometry (pure math) and, later, ffmpeg probing/decoding."""
+"""Frame geometry (pure math), ffprobe probing and ffmpeg frame decoding."""
 import json
 import shutil
 import subprocess
@@ -115,7 +115,7 @@ def probe(path) -> VideoInfo:
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_streams", "-show_format",
-             "-of", "json", str(path)],
+             "-of", "json", "-protocol_whitelist", "file,pipe", str(path)],
             capture_output=True, check=False)
     except OSError as exc:
         raise err from exc
@@ -148,7 +148,7 @@ def iter_frames(path, info: VideoInfo, start: float, duration: float,
         filters.append(crop)
     filters += [f"scale={layout.cols}:{layout.rows}:flags=area", "format=rgb24"]
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", str(start),
-           "-i", str(path), "-t", str(duration), "-an",
+           "-protocol_whitelist", "file,pipe", "-i", str(path), "-t", str(duration), "-an",
            "-vf", ",".join(filters), "-f", "rawvideo", "-pix_fmt", "rgb24",
            "pipe:1"]
     frame_bytes = layout.rows * layout.cols * 3

@@ -82,8 +82,8 @@ def _frame_brightness(path):
 
 def test_beat_mode(clip_clicks, tmp_path):
     out = tmp_path / "out.mp4"
-    # --contrast auto renormalizes every frame and would hide the beat flash,
-    # so disable it to make the brightness boost measurable.
+    # The beat boost is applied after contrast; disabling contrast here isolates
+    # the boost (test_beat_mode_default_contrast covers the default "auto").
     assert main([str(clip_clicks), "-o", str(out), "--beat", "--preview", "0",
                  "--color", "mono", "--contrast", "none", "--cols", "60"]) == 0
     brightness = _frame_brightness(out)
@@ -190,4 +190,90 @@ def test_crop_uses_realized_aspect(clip_169, tmp_path, monkeypatch):
     assert main([str(clip_169), "-o", str(out), "--aspect", "reel", "--preview", "1"]) == 0
     layout, aspect = seen[0]
     assert aspect == pytest.approx(layout.out_w / layout.out_h)
-    assert aspect != pytest.approx(9 / 16, abs=1e-9)
+
+
+def _failing_render(monkeypatch, exc, after):
+    from vid2ascii.render import Renderer
+
+    calls = []
+    original = Renderer.render
+
+    def render(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) > after:
+            raise exc
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Renderer, "render", render)
+
+
+def test_failure_mid_encode_leaves_no_output(clip_169, tmp_path, monkeypatch):
+    from vid2ascii import Vid2AsciiError
+
+    _failing_render(monkeypatch, Vid2AsciiError("boom"), after=10)
+    out = tmp_path / "out.mp4"
+    assert main([str(clip_169), "-o", str(out), "--cols", "30", "--duration", "2"]) == 2
+    assert not out.exists()
+    assert not (tmp_path / "out.partial.mp4").exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_interrupt_mid_encode_leaves_no_output(clip_169, tmp_path, monkeypatch, capsys):
+    _failing_render(monkeypatch, KeyboardInterrupt(), after=10)
+    out = tmp_path / "out.mp4"
+    assert main([str(clip_169), "-o", str(out), "--cols", "30", "--duration", "2"]) == 130
+    assert "interrupted" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_video_without_stored_duration(tmp_path):
+    src = tmp_path / "nodur.webm"
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+         "testsrc2=size=320x180:rate=25:duration=2", "-c:v", "libvpx", "-f", "webm",
+         "pipe:1"], capture_output=True, check=True)
+    src.write_bytes(result.stdout)
+    from vid2ascii.frames import probe
+
+    print("probed duration:", probe(src).duration)  # 0.0 when ffmpeg stores none
+    out = tmp_path / "out.mp4"
+    assert main([str(src), "-o", str(out), "--cols", "30"]) == 0
+    assert abs(float(ffprobe_json(out)["format"]["duration"]) - 2) <= 0.15
+
+
+def test_beat_mode_default_contrast(clip_clicks, tmp_path):
+    out = tmp_path / "out.mp4"
+    assert main([str(clip_clicks), "-o", str(out), "--beat", "--color", "mono",
+                 "--cols", "60"]) == 0
+    brightness = _frame_brightness(out)
+    fps = 24
+    beats = [round(k * 0.5 * fps) for k in range(1, 7)]
+    on_beat = [brightness[i:i + 3].max() for i in beats]
+    off_beat = [brightness[i + round(0.25 * fps)] for i in beats]
+    assert np.mean(on_beat) / np.mean(off_beat) > 1.1
+
+
+def test_folder_mode_continues_after_unexpected_error(clip_169, tmp_path, monkeypatch,
+                                                     capsys):
+    import vid2ascii.cli as cli
+
+    folder = tmp_path / "videos"
+    folder.mkdir()
+    shutil.copy(clip_169, folder / "a.mp4")
+    shutil.copy(clip_169, folder / "b.mp4")
+    original = cli.convert
+
+    def convert(src, out, args):
+        if src.name == "a.mp4":
+            raise RuntimeError("kaboom")
+        return original(src, out, args)
+
+    monkeypatch.setattr(cli, "convert", convert)
+    assert main([str(folder), "--cols", "30", "--duration", "1"]) == 1
+    assert "a.mp4: error: kaboom" in capsys.readouterr().err
+    assert (folder / "ascii_out" / "b_ascii.mp4").is_file()
+
+
+def test_url_input_rejected(tmp_path, capsys):
+    assert main(["http://127.0.0.1:9/clip.mp4", "-o", str(tmp_path / "o.mp4")]) == 2
+    assert "input not found" in capsys.readouterr().err

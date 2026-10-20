@@ -10,7 +10,8 @@ from . import InputError
 def load_audio(path, start: float, duration: float, sr: int = 22050) -> np.ndarray:
     """Decode a mono float32 segment of `path` at sample rate `sr`."""
     cmd = ["ffmpeg", "-v", "error", "-nostdin",
-           "-ss", str(start), "-t", str(duration), "-i", str(path),
+           "-ss", str(start), "-t", str(duration),
+           "-protocol_whitelist", "file,pipe", "-i", str(path),
            "-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"]
     try:
         proc = subprocess.run(cmd, capture_output=True)
