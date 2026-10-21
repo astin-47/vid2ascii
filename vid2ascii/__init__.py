@@ -17,3 +17,7 @@ class InputError(Vid2AsciiError):
 
 class FontError(Vid2AsciiError):
     """No usable monospace font could be loaded."""
+
+
+class Cancelled(Vid2AsciiError):
+    """A conversion was cancelled before it finished."""

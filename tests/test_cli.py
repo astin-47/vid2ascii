@@ -176,16 +176,16 @@ def test_aspect_reel_default_cols(clip_169, tmp_path):
 
 
 def test_crop_uses_realized_aspect(clip_169, tmp_path, monkeypatch):
-    import vid2ascii.cli as cli
+    import vid2ascii.engine as engine_mod
 
     seen = []
-    original = cli.iter_frames
+    original = engine_mod.iter_frames
 
     def recording(path, info, start, duration, fps, layout, aspect):
         seen.append((layout, aspect))
         return original(path, info, start, duration, fps, layout, aspect)
 
-    monkeypatch.setattr(cli, "iter_frames", recording)
+    monkeypatch.setattr(engine_mod, "iter_frames", recording)
     out = tmp_path / "out.mp4"
     assert main([str(clip_169), "-o", str(out), "--aspect", "reel", "--preview", "1"]) == 0
     layout, aspect = seen[0]

@@ -1,25 +1,18 @@
-"""Command line interface: decode -> render -> encode, preview and folder modes."""
+"""Command line interface: argument parsing, preview and folder modes over the engine."""
 
 import argparse
-import math
-import os
-import subprocess
 import sys
-import threading
-from collections import deque
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from . import InputError, Vid2AsciiError
-from .atlas import build_atlas, find_font, font_cell_ratio, resolve_charset
-from .frames import compute_layout, iter_frames, parse_aspect, probe, require_ffmpeg
-from .render import Renderer
+from . import InputError, Vid2AsciiError, engine
+from .engine import Options
+from .frames import require_ffmpeg
 
-MAX_DURATION = 60.0
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+MAX_DURATION = engine.MAX_DURATION
+VIDEO_EXTS = engine.VIDEO_EXTS
 
 
 def _number(cast, minimum, strict):
@@ -61,148 +54,30 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _beat_envelope(input_path, info, start, dur, n_frames, fps):
-    if not info.has_audio:
-        print(f"warning: {input_path.name} has no audio; --beat ignored", file=sys.stderr)
-        return None
-    from .audio import beat_envelope, detect_beats, load_audio
-
-    sr = 22050
-    samples = load_audio(input_path, start, dur, sr=sr)
-    return beat_envelope(detect_beats(samples, sr), n_frames, fps)
-
-
-def _render_frames(frames, renderer, envelope, n_frames):
-    """Yield (index, rendered frame) for at most n_frames decoded frames."""
-    for i, cells in enumerate(frames):
-        if i >= n_frames:
-            break
-        strength = float(envelope[i]) if envelope is not None else 0.0
-        yield i, renderer.render(cells, strength)
-
-
-def _write_previews(frames, renderer, envelope, n_frames, count, output_path):
-    """Render only the N evenly spaced frames and save them as PNGs."""
-    indices = np.round(np.linspace(0, n_frames - 1, count)).astype(int)
-    written = 0
-    for i, cells in enumerate(frames):
-        targets = np.flatnonzero(indices == i)
-        if targets.size:
-            strength = float(envelope[i]) if envelope is not None else 0.0
-            frame = renderer.render(cells, strength)
-            for j in targets:
-                name = f"{output_path.stem}_preview_{j + 1:02d}.png"
-                Image.fromarray(frame).save(output_path.parent / name)
-                written += 1
-        if i >= indices[-1]:
-            break
-    return written
-
-
-def _encode(rendered, output_path, input_path, info, layout, fps, start, dur, n_frames):
-    """Encode into a .partial sibling and move it into place only on success."""
-    partial = output_path.with_name(output_path.stem + ".partial" + output_path.suffix)
-    cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
-           "-s", f"{layout.out_w}x{layout.out_h}", "-r", str(fps), "-i", "-"]
-    if info.has_audio:
-        cmd += ["-ss", str(start), "-t", str(dur), "-protocol_whitelist", "file,pipe",
-                "-i", str(input_path),
-                "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
-    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-            "-shortest", "-movflags", "+faststart", str(partial)]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.PIPE)
-    tail = deque(maxlen=15)
-
-    def drain():
-        for line in proc.stderr:
-            tail.append(line.decode(errors="replace").rstrip())
-
-    reader = threading.Thread(target=drain, daemon=True)
-    reader.start()
-    count = 0
-    broken = False
-    try:
-        try:
-            with tqdm(total=n_frames, unit="frame", file=sys.stderr, disable=None) as bar:
-                for _, frame in rendered:
-                    try:
-                        proc.stdin.write(frame.data)
-                    except OSError:  # BrokenPipeError, or EINVAL on Windows
-                        broken = True
-                        break
-                    count += 1
-                    bar.update(1)
-        except BaseException:
-            proc.kill()  # abort: do not let ffmpeg finalize a truncated file
-            raise
-        finally:
-            try:
-                proc.stdin.close()
-            except OSError:
-                broken = True
-            if count == 0 and proc.poll() is None:
-                proc.kill()
-            proc.wait()
-            reader.join()
-        details = "\n".join(tail)
-        if count == 0 and not broken:
-            raise Vid2AsciiError(f"ffmpeg produced no frames for {input_path}")
-        if broken or proc.returncode != 0:
-            raise Vid2AsciiError(f"ffmpeg encoding failed for {output_path}:\n{details}")
-        os.replace(partial, output_path)
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
-    return count
+def _options(args: argparse.Namespace) -> Options:
+    return Options(start=args.start, duration=args.duration, fps=args.fps, cols=args.cols,
+                   color=args.color, charset=args.charset, contrast=args.contrast,
+                   beat=args.beat, aspect=args.aspect, font=args.font)
 
 
 def convert(input_path: Path, output_path: Path, args: argparse.Namespace) -> Path:
     input_path, output_path = Path(input_path), Path(output_path)
-    if not args.preview and output_path.exists() and not args.overwrite:
-        raise InputError(f"output exists: {output_path} (use --overwrite)")
-    if not input_path.is_file():
-        raise InputError(f"input not found: {input_path}")
-    info = probe(input_path)
-    start = args.start
-    if info.duration > 0:
-        dur = min(MAX_DURATION, args.duration or math.inf, info.duration - start)
-        if dur <= 0:
-            raise InputError("--start is past the end of the video")
-    else:  # duration unknown (e.g. a piped WebM): the decoder stops at EOF
-        dur = min(MAX_DURATION, args.duration or MAX_DURATION)
+    opts = _options(args)
+    if args.preview:
+        paths = engine.write_previews(input_path, output_path, opts, args.preview)
+        width, height = Image.open(paths[0]).size
+        print(f"{len(paths)} previews in {output_path.parent} ({width}x{height})")
+        return output_path.parent
+    with tqdm(unit="frame", file=sys.stderr, disable=None) as bar:
+        def progress(done, total):
+            bar.total = total
+            bar.update(done - bar.n)
 
-    chars = resolve_charset(args.charset)
-    aspect = parse_aspect(args.aspect, info.width, info.height)
-    font = find_font(args.font)
-    layout = compute_layout(aspect, args.cols, *font_cell_ratio(font))
-    renderer = Renderer(build_atlas(chars, font, layout.cw, layout.ch),
-                        color=args.color, contrast=args.contrast)
-
-    fps = args.fps
-    n_frames = max(1, round(dur * fps))
-    envelope = (_beat_envelope(input_path, info, start, dur, n_frames, fps)
-                if args.beat else None)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    frames = iter_frames(input_path, info, start, dur, fps, layout,
-                         layout.out_w / layout.out_h)
-    rendered = _render_frames(frames, renderer, envelope, n_frames)
-    try:
-        if args.preview:
-            written = _write_previews(frames, renderer, envelope, n_frames, args.preview,
-                                      output_path)
-            if written == 0:
-                raise Vid2AsciiError(f"ffmpeg produced no frames for {input_path}")
-            print(f"{written} previews in {output_path.parent} "
-                  f"({layout.out_w}x{layout.out_h})")
-            return output_path.parent
-        count = _encode(rendered, output_path, input_path, info, layout, fps, start, dur,
-                        n_frames)
-    finally:
-        rendered.close()
-        frames.close()
-    print(f"{output_path}  {layout.out_w}x{layout.out_h}  {count / fps:.2f}s  {count} frames")
-    return output_path
+        result = engine.convert(input_path, output_path, opts, overwrite=args.overwrite,
+                                on_progress=progress)
+    print(f"{result.path}  {result.width}x{result.height}  {result.duration:.2f}s  "
+          f"{result.frames} frames")
+    return result.path
 
 
 def _convert_folder(folder: Path, args: argparse.Namespace) -> int:
