@@ -28,9 +28,20 @@ sudo apt install ffmpeg
 
 ## Install
 
+Everything runs from a project virtualenv in `.venv`. The setup script creates it
+and installs the dependencies (safe to re-run):
+
 ```bash
-pip install -r requirements.txt
+powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
 ```
+
+```bash
+bash scripts/setup.sh
+```
+
+(Windows and macOS/Linux respectively.) Then run everything with the venv's
+Python: `.venv\Scripts\python` on Windows, `.venv/bin/python` elsewhere. The
+examples below write `python` for short.
 
 ## Quick start
 
@@ -156,8 +167,10 @@ No temporary frame files are written.
 ## Running tests
 
 ```bash
-python -m pytest
+.venv/Scripts/python -m pytest
 ```
+
+(On macOS/Linux: `.venv/bin/python -m pytest`.)
 
 ## Notes
 
