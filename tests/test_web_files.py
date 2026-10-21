@@ -145,3 +145,71 @@ def test_strip_is_a_filmstrip(env):
     width, height = Image.open(io.BytesIO(response.content)).size
     assert height == 54
     assert width >= 10 * 90  # ten 16:9 frames side by side
+
+
+def test_strip_seeks_instead_of_decoding_everything(env, monkeypatch):
+    import subprocess as sp
+
+    client, app, *_ = env
+    commands = []
+    real_run = sp.run
+
+    def recording(cmd, *args, **kwargs):
+        commands.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(files_mod.subprocess, "run", recording)
+    assert client.get(url("lib:a.mp4", "strip")).status_code == 200
+    ffmpeg = [c for c in commands if c[0] == "ffmpeg"]
+    assert len(ffmpeg) == 10
+    for cmd in ffmpeg:
+        assert cmd.index("-ss") < cmd.index("-i"), "seek before the input"
+        assert cmd[cmd.index("-frames:v") + 1] == "1"
+        assert not any("tile" in part for part in cmd)
+
+
+def test_strip_built_once_for_concurrent_requests(env, monkeypatch):
+    import subprocess as sp
+    import threading
+
+    client, *_ = env
+    count = [0]
+    real_run = sp.run
+
+    def counting(cmd, *args, **kwargs):
+        if cmd[0] == "ffmpeg":
+            count[0] += 1
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(files_mod.subprocess, "run", counting)
+    threads = [threading.Thread(target=client.get, args=(url("lib:a.mp4", "strip"),))
+               for _ in range(3)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert count[0] == 10
+
+
+def test_library_skips_entries_outside_the_roots(env, monkeypatch):
+    client, app, *_ = env
+    store = app.state.files
+    real = FileStore.id_for
+
+    def escaping(self, path):  # what a symlink pointing outside the library resolves to
+        if path.name == "a.mp4":
+            raise KeyError(str(path))
+        return real(self, path)
+
+    monkeypatch.setattr(FileStore, "id_for", escaping)
+    response = client.get("/api/library")
+    assert response.status_code == 200
+    assert [i["name"] for i in response.json()["items"]] == [ODD]
+
+
+def test_static_files_are_revalidated(env):
+    client, *_ = env
+    for path in ("/static/app.js", "/static/app.css"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-cache", path

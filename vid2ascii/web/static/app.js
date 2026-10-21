@@ -44,8 +44,13 @@ function short(seconds) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 function rangeLength() { return Math.max(0, state.end - state.start); }
+const knownLength = () => state.duration > 0;
+function renderSeconds() {
+  return knownLength() ? Math.min(rangeLength(), state.config.limits.max_duration) : null;
+}
 function frameCount() {
-  return Math.max(1, Math.round(Math.min(rangeLength(), state.config.limits.max_duration) * state.options.fps));
+  const seconds = renderSeconds() ?? state.config.limits.max_duration;
+  return Math.max(1, Math.round(seconds * state.options.fps));
 }
 
 // ---------------------------------------------------------------- toasts
@@ -195,7 +200,7 @@ function requestOptions() {
   return {
     ...state.options,
     start: round3(state.start),
-    duration: round3(Math.min(rangeLength(), state.config.limits.max_duration)),
+    duration: knownLength() ? round3(renderSeconds()) : null,
   };
 }
 const round3 = (v) => Math.round(v * 1000) / 1000;
@@ -247,8 +252,19 @@ async function send(req) {
     const ms = res.headers.get("x-render-ms");
     const url = URL.createObjectURL(await res.blob());
     const img = new Image();
-    img.src = url;
-    await img.decode();
+    try {
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error("the preview image could not be read"));
+        img.src = url;
+      });
+      // decode before the swap so the stage never flashes; an occluded window may defer
+      // decoding indefinitely, so wait at most 150 ms for it
+      await Promise.race([img.decode().catch(() => {}), new Promise((r) => setTimeout(r, 150))]);
+    } catch (err) {
+      URL.revokeObjectURL(url);
+      throw err;
+    }
     if (req.seq > pv.shown) {
       pv.shown = req.seq;
       const el = $("preview-img");
@@ -306,8 +322,12 @@ function updateFinding() {
   const parts = [];
   if (state.grid) parts.push([times(state.grid), " characters"]);
   if (state.output) parts.push([times(state.output), ""]);
-  parts.push([secs(Math.min(rangeLength(), state.config.limits.max_duration)), ""]);
-  parts.push([`${frameCount().toLocaleString()} frames`, ""]);
+  if (knownLength()) {
+    parts.push([secs(renderSeconds()), ""]);
+    parts.push([`${frameCount().toLocaleString()} frames`, ""]);
+  } else {
+    parts.push(["length unknown", ", renders up to 60 s"]);
+  }
   parts.forEach(([strong, rest], i) => {
     if (i) el.append(i === parts.length - 1 ? " → " : " · ");
     const b = document.createElement("strong");
@@ -336,16 +356,24 @@ function drawTimeline() {
   $("playhead-label").textContent = clock(state.t);
   $("t-start").textContent = clock(0);
   $("t-end").textContent = clock(state.duration);
+  $("range").hidden = !knownLength();
+  if (!knownLength()) {
+    $("t-end").textContent = "–";
+    $("t-range").textContent = "This file does not store its length; the render runs to its end, 60 s at most";
+    return;
+  }
   const len = rangeLength();
   const capped = len > state.config.limits.max_duration;
   $("t-range").textContent = `Render ${clock(state.start)} – ${clock(state.end)} (${secs(Math.min(len, state.config.limits.max_duration))}${capped ? ", 60 s max" : ""})`;
 }
 
 let drag = null;
+let dragLength = 0;
 track.addEventListener("pointerdown", (e) => {
-  if (!state.clip) return;
+  if (!state.clip || !knownLength()) return;
   const handle = e.target.closest(".handle");
   drag = handle ? (handle.id === "handle-start" ? "start" : "end") : "playhead";
+  dragLength = Math.max(MIN_RANGE, state.end - state.start);
   track.setPointerCapture(e.pointerId);
   moveDrag(e.clientX);
 });
@@ -358,16 +386,22 @@ const endDrag = () => {
 track.addEventListener("pointerup", endDrag);
 track.addEventListener("pointercancel", endDrag);
 
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
 function moveDrag(x) {
   const t = timeAt(x);
   const max = state.config.limits.max_duration;
+  const d = state.duration;
   if (drag === "start") {
-    state.start = Math.min(t, state.end - MIN_RANGE);
-    state.start = Math.max(0, state.start, state.end - max);
+    state.start = clamp(t, 0, Math.max(0, d - MIN_RANGE));
+    // a start pushed past the end carries the end along, keeping the range's length
+    if (state.end < state.start + MIN_RANGE) state.end = state.start + dragLength;
+    state.end = clamp(state.end, Math.min(d, state.start + MIN_RANGE), Math.min(d, state.start + max));
     state.t = state.start;
   } else if (drag === "end") {
-    state.end = Math.max(t, state.start + MIN_RANGE);
-    state.end = Math.min(state.duration, state.end, state.start + max);
+    state.end = clamp(t, Math.min(MIN_RANGE, d), d);
+    if (state.start > state.end - MIN_RANGE) state.start = state.end - dragLength;
+    state.start = clamp(state.start, Math.max(0, state.end - max), Math.max(0, state.end - MIN_RANGE));
     state.t = state.end;
   } else {
     state.t = t;
@@ -569,7 +603,16 @@ function watchJob(jobId, name) {
     toast(`Saved ${item.name} to the outputs folder.`);
   });
   events.addEventListener("error", (e) => {
-    if (!e.data) return;   // a dropped connection, not a job error; EventSource retries
+    if (!e.data) {
+      if (events.readyState === EventSource.CLOSED) {   // the job is gone (the server restarted)
+        finish();
+        setStatus("error");
+        toast("Lost contact with the render. The server may have restarted; nothing was saved.", "error");
+      } else {
+        $("job-text").textContent = "Reconnecting to the server…";
+      }
+      return;
+    }
     finish();
     setStatus("error");
     toast(JSON.parse(e.data).message, "error");

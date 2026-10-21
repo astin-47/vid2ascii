@@ -7,7 +7,7 @@ import socket
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, Request, UploadFile
 import anyio
@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .. import InputError, Vid2AsciiError
 from ..atlas import CHARSETS
@@ -29,6 +30,17 @@ STATIC = Path(__file__).parent / "static"
 CHUNK = 1024 * 1024
 SIZES = {"full": 1920, "draft": 960}
 EVENT_INTERVAL = 0.25
+LOCAL_HOSTS = ["127.0.0.1", "localhost", "testserver"]  # testserver: FastAPI's TestClient
+
+
+class RevalidatedStatic(StaticFiles):
+    """Static files the browser must revalidate (a cheap 304), so an updated page is never
+    replaced by a stale copy from the heuristic cache."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 class ApiError(Exception):
@@ -52,6 +64,18 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
     app = FastAPI(title="vid2ascii", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.files = store
     app.state.jobs = jobs
+
+    # Only this machine's own pages may talk to the server: a foreign Host header (DNS rebinding)
+    # is refused, and so is a state-changing request sent from another site's page.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=LOCAL_HOSTS)
+
+    @app.middleware("http")
+    async def same_origin_only(request: Request, call_next):
+        origin = request.headers.get("origin")
+        if (request.method not in ("GET", "HEAD", "OPTIONS") and origin
+                and urlsplit(origin).hostname not in LOCAL_HOSTS):
+            return _error(403, "requests from other websites are not allowed")
+        return await call_next(request)
 
     @app.exception_handler(ApiError)
     async def _api_error(_, exc: ApiError):
@@ -223,7 +247,7 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-store"})
 
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    app.mount("/static", RevalidatedStatic(directory=STATIC), name="static")
     return app
 
 
@@ -255,6 +279,18 @@ def serve(library: Path, workdir: Path, port: int, open_browser: bool) -> int:
     print(f"vid2ascii web interface: {url}  (library: {library})  Ctrl+C to stop")
     if open_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    uvicorn.run(create_app(library, workdir), host="127.0.0.1", port=chosen,
-                log_level="warning")
+    make_server(create_app(library, workdir), chosen).run()
     return 0
+
+
+def make_server(app: FastAPI, port: int):
+    """A uvicorn server that cancels running renders the moment Ctrl+C arrives, before it
+    waits for open connections (the page's progress stream) to close."""
+    import uvicorn
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            app.state.jobs.cancel_all()
+            super().handle_exit(sig, frame)
+
+    return Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))

@@ -277,3 +277,30 @@ def test_folder_mode_continues_after_unexpected_error(clip_169, tmp_path, monkey
 def test_url_input_rejected(tmp_path, capsys):
     assert main(["http://127.0.0.1:9/clip.mp4", "-o", str(tmp_path / "o.mp4")]) == 2
     assert "input not found" in capsys.readouterr().err
+
+
+def test_progress_bar_not_opened_before_errors(clip_169, tmp_path, monkeypatch):
+    import vid2ascii.cli as cli
+
+    opened = []
+
+    class FakeBar:
+        def __init__(self, *args, **kwargs):
+            opened.append(kwargs)
+            self.n, self.total = 0, None
+
+        def update(self, n):
+            self.n += n
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cli, "tqdm", FakeBar)
+    assert main([str(clip_169), "-o", str(tmp_path / "o.mp4"), "--start", "99"]) == 2
+    assert opened == []

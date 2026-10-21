@@ -255,3 +255,47 @@ def test_preview_renders_at_most_two_at_once(env, monkeypatch):
     for th in threads:
         th.join()
     assert peak[0] <= 2, f"{peak[0]} previews rendered at once"
+
+
+def test_exit_signal_cancels_running_job(clip_720p, tmp_path):
+    import signal
+
+    from vid2ascii.web.server import make_server
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    shutil.copy(clip_720p, lib / "hd.mp4")
+    app = create_app(lib, tmp_path / "work")
+    jobs = app.state.jobs
+    job_id = jobs.submit("lib:hd.mp4", Options(duration=5))
+    while jobs.get(job_id).state != "running":
+        time.sleep(0.02)
+    make_server(app, 0).handle_exit(signal.SIGINT, None)  # what Ctrl+C triggers
+    deadline = time.time() + 10
+    while jobs.get(job_id).state == "running" and time.time() < deadline:
+        time.sleep(0.05)
+    assert jobs.get(job_id).state == "cancelled"
+    assert list(app.state.files.outputs.iterdir()) == []
+    jobs.shutdown()
+
+
+def test_rejects_foreign_host(env):
+    client, *_ = env
+    response = client.get("/api/library", headers={"Host": "evil.example"})
+    assert response.status_code == 400
+
+
+def test_rejects_cross_site_post(env, clip_169):
+    client, *_ = env
+    with open(clip_169, "rb") as fh:
+        response = client.post("/api/upload", files={"file": ("x.mp4", fh, "video/mp4")},
+                               headers={"Origin": "http://evil.example"})
+    assert response.status_code == 403
+    assert response.json()["error"]
+
+
+def test_allows_same_origin_post(env):
+    client, *_ = env
+    response = client.post("/api/preview", headers={"Origin": "http://127.0.0.1:8765"},
+                           json={"id": "lib:a.mp4", "t": 1, "options": {}, "size": "draft"})
+    assert response.status_code == 200

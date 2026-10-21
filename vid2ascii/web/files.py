@@ -1,12 +1,15 @@
 """Maps opaque file ids to paths inside the library, uploads and outputs folders."""
 
 import hashlib
+import io
 import re
 import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+from PIL import Image
 
 from .. import InputError
 from ..engine import VIDEO_EXTS
@@ -28,6 +31,7 @@ class FileStore:
         self._roots = {"lib": self.library, "up": self.uploads, "out": self.outputs}
         self._probe_cache: dict = {}
         self._lock = threading.Lock()
+        self._strip_locks: dict[str, threading.Lock] = {}
 
     # ---- ids ---------------------------------------------------------------
     def resolve(self, file_id: str) -> Path:
@@ -88,8 +92,8 @@ class FileStore:
                     and ".partial." not in path.name:
                 try:
                     items.append(self.describe(path))
-                except InputError:
-                    continue  # unreadable file: skip it rather than fail the listing
+                except (InputError, KeyError, OSError):
+                    continue  # unreadable, or a link that leads outside the folder: skip it
         return items
 
     def list_library(self) -> list[dict]:
@@ -140,19 +144,40 @@ class FileStore:
         return target
 
     def strip(self, path: Path, frames: int = 10, height: int = 54) -> Path:
-        """One JPEG of `frames` evenly spaced frames side by side, for the timeline."""
+        """One JPEG of `frames` evenly spaced frames side by side, for the timeline.
+        Each frame is a seek plus a single-frame decode, so a long video costs the same."""
         path = Path(path)
-        digest = hashlib.sha1(f"strip|{path}|{path.stat().st_mtime_ns}".encode()).hexdigest()
+        stat = path.stat()
+        digest = hashlib.sha1(
+            f"strip|{path}|{stat.st_mtime_ns}|{stat.st_size}".encode()).hexdigest()
         target = self.thumbs / f"{digest}.jpg"
-        if not target.exists():
-            duration = self.describe(path)["duration"] or frames
-            vf = f"fps={frames}/{duration:.3f},scale=-2:{height},tile={frames}x1"
-            tmp = target.with_name(f"{digest}.{time.monotonic_ns()}.tmp.jpg")
-            cmd = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe",
-                   "-i", str(path), "-an", "-vf", vf, "-frames:v", "1", "-q:v", "5", str(tmp)]
-            result = subprocess.run(cmd, capture_output=True)
-            if result.returncode != 0 or not tmp.exists():
-                tmp.unlink(missing_ok=True)
-                raise InputError(f"cannot read video: {self.display_name(path)}")
-            tmp.replace(target)
+        with self._lock:
+            lock = self._strip_locks.setdefault(digest, threading.Lock())
+        with lock:  # concurrent requests for one strip build it once
+            if not target.exists():
+                self._build_strip(path, target, frames, height)
         return target
+
+    def _build_strip(self, path: Path, target: Path, frames: int, height: int) -> None:
+        duration = self.describe(path)["duration"]
+        tiles = []
+        for i in range(frames):
+            at = duration * (i + 0.5) / frames if duration > 0 else 0.0
+            cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{at:.3f}",
+                   "-protocol_whitelist", "file,pipe", "-i", str(path), "-an",
+                   "-frames:v", "1", "-vf", f"scale=-2:{height}", "-f", "image2pipe",
+                   "-c:v", "png", "pipe:1"]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode == 0 and result.stdout:
+                tiles.append(Image.open(io.BytesIO(result.stdout)).convert("RGB"))
+        if not tiles:
+            raise InputError(f"cannot read video: {self.display_name(path)}")
+        while len(tiles) < frames:  # a seek past the last frame: repeat the last tile
+            tiles.append(tiles[-1])
+        width = tiles[0].width
+        sheet = Image.new("RGB", (width * frames, height))
+        for i, tile in enumerate(tiles):
+            sheet.paste(tile.resize((width, height)), (i * width, 0))
+        tmp = target.with_name(f"{target.stem}.{time.monotonic_ns()}.tmp.jpg")
+        sheet.save(tmp, "JPEG", quality=80)
+        tmp.replace(target)

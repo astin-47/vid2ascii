@@ -68,13 +68,20 @@ def convert(input_path: Path, output_path: Path, args: argparse.Namespace) -> Pa
         width, height = Image.open(paths[0]).size
         print(f"{len(paths)} previews in {output_path.parent} ({width}x{height})")
         return output_path.parent
-    with tqdm(unit="frame", file=sys.stderr, disable=None) as bar:
-        def progress(done, total):
-            bar.total = total
-            bar.update(done - bar.n)
+    bar = None
 
+    def progress(done, total):
+        nonlocal bar
+        if bar is None:  # opened lazily, so errors and warnings print before any bar
+            bar = tqdm(total=total, unit="frame", file=sys.stderr, disable=None)
+        bar.update(done - bar.n)
+
+    try:
         result = engine.convert(input_path, output_path, opts, overwrite=args.overwrite,
                                 on_progress=progress)
+    finally:
+        if bar is not None:
+            bar.close()
     print(f"{result.path}  {result.width}x{result.height}  {result.duration:.2f}s  "
           f"{result.frames} frames")
     return result.path

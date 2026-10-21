@@ -63,12 +63,15 @@ class JobQueue:
         if job.state == "queued":
             job.state = "cancelled"
 
-    def shutdown(self) -> None:
+    def cancel_all(self) -> None:
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
             if job.state not in TERMINAL:
                 self.cancel(job.id)
+
+    def shutdown(self) -> None:
+        self.cancel_all()
         self._queue.put(None)
         self._worker.join(timeout=30)
 
