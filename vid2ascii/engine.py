@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import threading
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Callable
@@ -15,7 +15,8 @@ from PIL import Image
 
 from . import Cancelled, InputError, Vid2AsciiError
 from .atlas import build_atlas, find_font, font_cell_ratio, resolve_charset
-from .frames import Layout, VideoInfo, compute_layout, iter_frames, parse_aspect, probe
+from .frames import (Layout, VideoInfo, compute_layout, decode_frame, iter_frames,
+                     parse_aspect, probe)
 from .render import AutoContrast, Renderer
 
 MAX_DURATION = 60.0
@@ -254,3 +255,75 @@ def write_previews(src: Path, out_base: Path, opts: Options, count: int) -> list
     if not written:
         raise Vid2AsciiError(f"ffmpeg produced no frames for {src}")
     return written
+
+
+class _LRU:
+    def __init__(self, size: int):
+        self.size = size
+        self.items: OrderedDict = OrderedDict()
+
+    def get(self, key, make):
+        if key in self.items:
+            self.items.move_to_end(key)
+            return self.items[key]
+        value = make()
+        self.items[key] = value
+        if len(self.items) > self.size:
+            self.items.popitem(last=False)
+        return value
+
+
+class PreviewCache:
+    """Thread-safe caches for probe results, decoded grid frames and glyph atlases."""
+
+    def __init__(self, max_frames: int = 64, max_atlases: int = 16):
+        self._lock = threading.Lock()
+        self._infos = _LRU(64)
+        self._frames = _LRU(max_frames)
+        self._atlases = _LRU(max_atlases)
+
+    @staticmethod
+    def _mtime(src: Path) -> int:
+        return Path(src).stat().st_mtime_ns
+
+    def _cached(self, lru: _LRU, key, make):
+        with self._lock:
+            if key in lru.items:
+                return lru.get(key, make)
+        value = make()  # slow work runs outside the lock
+        with self._lock:
+            return lru.get(key, lambda: value)
+
+    def info(self, src: Path) -> VideoInfo:
+        return self._cached(self._infos, (str(src), self._mtime(src)), lambda: probe(src))
+
+    def frame(self, src: Path, info: VideoInfo, t: float, fps: float, layout: Layout,
+              aspect: float) -> np.ndarray:
+        key = (str(src), self._mtime(src), round(t * fps), layout.cols, layout.rows,
+               round(aspect, 4))
+        return self._cached(self._frames, key,
+                            lambda: decode_frame(src, info, t, layout, aspect))
+
+    def atlas(self, font: str, chars: str, cw: int, ch: int) -> np.ndarray:
+        return self._cached(self._atlases, (font, chars, cw, ch),
+                            lambda: build_atlas(chars, font, cw, ch))
+
+
+_default_cache = PreviewCache()
+
+
+def render_still(src: Path, t: float, opts: Options, *, long_side: int = 1920,
+                 cache: PreviewCache | None = None) -> np.ndarray:
+    """Render the single frame at time t (no beat effect) as uint8 (H, W, 3)."""
+    src = Path(src)
+    opts.validate()
+    cache = cache or _default_cache
+    if not src.is_file():
+        raise InputError(f"input not found: {src}")
+    info = cache.info(src)
+    p = plan(src, opts, long_side=long_side, info=info)
+    t = min(max(0.0, t), info.duration) if info.duration > 0 else max(0.0, t)
+    layout = p.layout
+    cells = cache.frame(src, info, t, p.fps, layout, layout.out_w / layout.out_h)
+    atlas = cache.atlas(p.font, p.chars, layout.cw, layout.ch)
+    return Renderer(atlas, color=opts.color, contrast=opts.contrast).render(cells)

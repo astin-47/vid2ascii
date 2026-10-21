@@ -140,13 +140,18 @@ def probe(path) -> VideoInfo:
     return VideoInfo(int(width), int(height), fps, duration, has_audio)
 
 
-def iter_frames(path, info: VideoInfo, start: float, duration: float,
-                fps: float, layout: Layout, aspect: float) -> Iterator[np.ndarray]:
-    filters = [f"fps={fps}"]
+def _grid_filters(info: VideoInfo, layout: Layout, aspect: float) -> list[str]:
+    """Center-crop to the output aspect, then area-downscale to the character grid."""
+    filters = []
     crop = crop_filter(info.width, info.height, aspect)
     if crop:
         filters.append(crop)
-    filters += [f"scale={layout.cols}:{layout.rows}:flags=area", "format=rgb24"]
+    return filters + [f"scale={layout.cols}:{layout.rows}:flags=area", "format=rgb24"]
+
+
+def iter_frames(path, info: VideoInfo, start: float, duration: float,
+                fps: float, layout: Layout, aspect: float) -> Iterator[np.ndarray]:
+    filters = [f"fps={fps}", *_grid_filters(info, layout, aspect)]
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", str(start),
            "-protocol_whitelist", "file,pipe", "-i", str(path), "-t", str(duration), "-an",
            "-vf", ",".join(filters), "-f", "rawvideo", "-pix_fmt", "rgb24",
@@ -167,3 +172,19 @@ def iter_frames(path, info: VideoInfo, start: float, duration: float,
         if proc.poll() is None:
             proc.kill()
         proc.wait()
+
+
+def decode_frame(path, info: VideoInfo, t: float, layout: Layout,
+                 aspect: float) -> np.ndarray:
+    """Decode the single frame at time t, already cropped and scaled to the grid."""
+    frame_bytes = layout.rows * layout.cols * 3
+    vf = ",".join(_grid_filters(info, layout, aspect))
+    for when in (t, max(0.0, info.duration - 0.1)):
+        cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{max(0.0, when):.3f}",
+               "-protocol_whitelist", "file,pipe", "-i", str(path), "-an",
+               "-frames:v", "1", "-vf", vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode == 0 and len(result.stdout) >= frame_bytes:
+            return np.frombuffer(result.stdout[:frame_bytes], dtype=np.uint8).reshape(
+                layout.rows, layout.cols, 3)
+    raise InputError(f"cannot decode a frame at {t:.2f}s from {path}")
