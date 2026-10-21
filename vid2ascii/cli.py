@@ -99,7 +99,35 @@ def _convert_folder(folder: Path, args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def build_serve_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="vid2ascii serve", description="Open the local web interface.",
+        epilog="To convert a file literally named 'serve', pass it as ./serve.")
+    p.add_argument("--library", type=Path, default=Path.home() / "Videos",
+                   help="folder of videos to list in the page (default: ~/Videos)")
+    p.add_argument("--workdir", type=Path, default=Path.cwd(),
+                   help="where work/ and outputs/ are kept (default: current folder)")
+    p.add_argument("--port", type=_number(int, 1, False), default=8765)
+    p.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
+    return p
+
+
+def _serve(argv: list[str]) -> int:
+    args = build_serve_parser().parse_args(argv)
+    try:
+        require_ffmpeg()
+    except Vid2AsciiError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    from .web import server
+
+    return server.serve(args.library, args.workdir, args.port, not args.no_browser)
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["serve"]:
+        return _serve(argv[1:])
     args = build_parser().parse_args(argv)
     try:
         require_ffmpeg()
