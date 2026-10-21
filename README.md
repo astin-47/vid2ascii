@@ -140,6 +140,38 @@ Use a specific font:
 python -m vid2ascii clip.mp4 --font C:/Windows/Fonts/consola.ttf
 ```
 
+## Web interface
+
+A local page for picking a video, tuning it against a live ASCII preview and
+rendering it, with no command line needed:
+
+```bash
+.venv/Scripts/python -m vid2ascii serve
+```
+
+It starts a server on `127.0.0.1` (nothing is reachable from other machines) and
+opens your browser. The page lists the videos in your `Videos` folder; drop any
+other video onto the page to add it.
+
+![The vid2ascii web interface](docs/proof/web-ui.jpg)
+
+- **Preview** updates as you change a setting (columns, colour, characters,
+  contrast, shape, frame rate, beat flash). Drag on the filmstrip to look at any
+  moment; drag the green handles to choose the part to render (60 s at most).
+- **Render** runs in the background with live progress and a Cancel button.
+  The finished video plays in the page, has a Download button, and is saved to
+  `outputs/`. Starting another render while one runs queues it.
+- Keys: `←`/`→` move one frame, `Shift+←`/`→` one second, `Space` plays the result.
+
+Options for `serve`:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--library PATH` | `~/Videos` | Folder of videos listed in the page |
+| `--workdir PATH` | current folder | Where `work/` (uploads, thumbnails) and `outputs/` are kept |
+| `--port N` | `8765` | Port to listen on; the next ten are tried if it is busy |
+| `--no-browser` | off | Do not open a browser tab |
+
 ## Output size and aspect
 
 The long side of the output is about 1920 px (it varies a little with `--cols`

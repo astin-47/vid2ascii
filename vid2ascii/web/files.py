@@ -138,3 +138,21 @@ class FileStore:
                 raise InputError(f"cannot read video: {self.display_name(path)}")
             tmp.replace(target)
         return target
+
+    def strip(self, path: Path, frames: int = 10, height: int = 54) -> Path:
+        """One JPEG of `frames` evenly spaced frames side by side, for the timeline."""
+        path = Path(path)
+        digest = hashlib.sha1(f"strip|{path}|{path.stat().st_mtime_ns}".encode()).hexdigest()
+        target = self.thumbs / f"{digest}.jpg"
+        if not target.exists():
+            duration = self.describe(path)["duration"] or frames
+            vf = f"fps={frames}/{duration:.3f},scale=-2:{height},tile={frames}x1"
+            tmp = target.with_name(f"{digest}.{time.monotonic_ns()}.tmp.jpg")
+            cmd = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe",
+                   "-i", str(path), "-an", "-vf", vf, "-frames:v", "1", "-q:v", "5", str(tmp)]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode != 0 or not tmp.exists():
+                tmp.unlink(missing_ok=True)
+                raise InputError(f"cannot read video: {self.display_name(path)}")
+            tmp.replace(target)
+        return target

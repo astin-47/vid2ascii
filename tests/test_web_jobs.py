@@ -218,3 +218,40 @@ def test_serve_no_free_port(monkeypatch, capsys):
     monkeypatch.setattr(server, "pick_port", lambda start, tries=11: None)
     assert server.serve(server.Path("."), server.Path("."), 8765, False) == 2
     assert "no free port" in capsys.readouterr().err
+
+
+def test_preview_reports_grid_and_output(env):
+    client, _, lib = env
+    layout = plan(lib / "a.mp4", Options(cols=80)).layout
+    response = preview(client, size="draft", cols=80)
+    assert response.headers["x-grid"] == f"{layout.cols}x{layout.rows}"
+    assert response.headers["x-output"] == f"{layout.out_w}x{layout.out_h}"
+
+
+def test_preview_renders_at_most_two_at_once(env, monkeypatch):
+    import vid2ascii.web.server as server
+
+    client, *_ = env
+    active, peak = [0], [0]
+    lock = threading.Lock()
+    real = server.render_still
+
+    def slow(*args, **kwargs):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.2)
+        try:
+            return real(*args, **kwargs)
+        finally:
+            with lock:
+                active[0] -= 1
+
+    monkeypatch.setattr(server, "render_still", slow)
+    threads = [threading.Thread(target=preview, args=(client,), kwargs={"size": "draft"})
+               for _ in range(6)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert peak[0] <= 2, f"{peak[0]} previews rendered at once"

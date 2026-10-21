@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request, UploadFile
+import anyio
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import InputError, Vid2AsciiError
 from ..atlas import CHARSETS
-from ..engine import COLORS, MAX_DURATION, Options, render_still
+from ..engine import COLORS, MAX_DURATION, Options, layout_for, render_still
 from ..frames import ASPECTS
 from . import files as files_mod
 from .files import FileStore
@@ -96,7 +97,7 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
 
     @app.get("/api/library")
     def library():
-        result = {"items": [], "uploads": store.list_uploads()}
+        result = {"items": [], "uploads": store.list_uploads(), "folder": str(store.library)}
         if not store.library.is_dir():
             result["warning"] = (f"library folder not found: {store.library} "
                                  "(start the server with --library PATH)")
@@ -140,6 +141,11 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
         return FileResponse(store.thumb(lookup(file_id)), media_type="image/jpeg",
                             headers={"Cache-Control": "max-age=3600"})
 
+    @app.get("/api/files/{file_id:path}/strip")
+    def strip(file_id: str):
+        return FileResponse(store.strip(lookup(file_id)), media_type="image/jpeg",
+                            headers={"Cache-Control": "max-age=3600"})
+
     @app.get("/api/files/{file_id:path}/video")
     def video(file_id: str):
         return FileResponse(lookup(file_id))
@@ -151,8 +157,10 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
         disposition = f"attachment; filename*=UTF-8''{quote(name)}"
         return FileResponse(path, headers={"Content-Disposition": disposition})
 
+    preview_slots = anyio.CapacityLimiter(2)  # previews render on at most two threads
+
     @app.post("/api/preview")
-    async def preview(body: dict):
+    async def preview(request: Request, body: dict):
         path = lookup(str(body.get("id", "")))
         opts = Options.from_dict(body.get("options") or {})
         long_side = SIZES.get(body.get("size", "full"), SIZES["full"])
@@ -163,11 +171,17 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
             frame = render_still(path, t, opts, long_side=long_side)
             buf = io.BytesIO()
             Image.fromarray(frame).save(buf, "JPEG", quality=85)
-            return buf.getvalue(), round((time.perf_counter() - started) * 1000)
+            elapsed = round((time.perf_counter() - started) * 1000)
+            return buf.getvalue(), elapsed, layout_for(path, opts)
 
-        data, elapsed = await run_in_threadpool(work)
-        return Response(data, media_type="image/jpeg",
-                        headers={"X-Render-Ms": str(elapsed), "Cache-Control": "no-store"})
+        async with preview_slots:
+            if await request.is_disconnected():  # the page already asked for a newer frame
+                return Response(status_code=204)
+            data, elapsed, out = await anyio.to_thread.run_sync(work)
+        return Response(data, media_type="image/jpeg", headers={
+            "X-Render-Ms": str(elapsed), "Cache-Control": "no-store",
+            "X-Grid": f"{out.cols}x{out.rows}", "X-Output": f"{out.out_w}x{out.out_h}",
+            "Access-Control-Expose-Headers": "X-Render-Ms, X-Grid, X-Output"})
 
     def job_or_404(job_id: str):
         try:

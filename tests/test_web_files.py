@@ -133,3 +133,15 @@ def test_outputs_listed(env, clip_169):
     items = client.get("/api/outputs").json()["items"]
     assert [i["id"] for i in items] == ["out:a_ascii.mp4"]
     assert "created" in items[0]
+
+
+def test_strip_is_a_filmstrip(env):
+    client, *_ = env
+    response = client.get(url("lib:a.mp4", "strip"))
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    from PIL import Image
+    import io
+    width, height = Image.open(io.BytesIO(response.content)).size
+    assert height == 54
+    assert width >= 10 * 90  # ten 16:9 frames side by side

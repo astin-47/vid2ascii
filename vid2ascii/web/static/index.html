@@ -1,2 +1,172 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>vid2ascii</title></head><body>vid2ascii</body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vid2ascii</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23000'/%3E%3Ctext x='8' y='12' font-size='11' text-anchor='middle' fill='%2333ff66' font-family='monospace'%3E@%3C/text%3E%3C/svg%3E">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="vid2ascii home">
+      <span class="mark" aria-hidden="true"><span>.</span><span>:</span><span>@</span></span>
+      <span class="wordmark">vid2ascii</span>
+    </a>
+    <span class="divider" aria-hidden="true"></span>
+    <div class="object">
+      <h1 id="clip-title">No video selected</h1>
+      <span class="pill" id="status-pill" hidden></span>
+    </div>
+    <div class="top-actions">
+      <a class="btn" id="download-btn" aria-disabled="true" download>Download</a>
+      <button class="btn primary" id="render-btn" disabled>Render</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- Source: drop zone, the library folder, uploads and finished renders -->
+    <aside class="panel source" aria-label="Videos">
+      <section>
+        <div class="panel-head">
+          <h2>Videos</h2>
+          <span class="meta" id="library-path"></span>
+        </div>
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="file-input" accept="video/*,.mkv,.mov,.avi,.webm,.m4v" hidden>
+          <span class="drop-main">Drop a video here</span>
+          <span class="drop-sub">or click to browse</span>
+          <span class="upload-bar" hidden><span></span></span>
+        </label>
+        <ul class="clips" id="library-list" aria-label="Library"></ul>
+        <p class="hint" id="library-hint" hidden></p>
+      </section>
+      <section id="uploads-section" hidden>
+        <h3>Uploaded</h3>
+        <ul class="clips" id="uploads-list" aria-label="Uploaded videos"></ul>
+      </section>
+      <section>
+        <h3>Renders</h3>
+        <ul class="clips renders" id="renders-list" aria-label="Renders"></ul>
+        <p class="hint" id="renders-empty">Finished videos appear here and in the outputs folder.</p>
+      </section>
+    </aside>
+
+    <!-- The stage: the live ASCII preview, its ramp and the timeline -->
+    <section class="panel stage-panel" id="stage-panel" aria-label="Preview">
+      <div class="stage-head">
+        <p class="finding" id="finding">Choose a video to see it as characters.</p>
+        <div class="stage-tools">
+          <span class="render-ms" id="render-ms"></span>
+          <div class="segmented small" id="stage-mode" role="tablist" hidden>
+            <button role="tab" aria-selected="true" data-mode="preview">Preview</button>
+            <button role="tab" aria-selected="false" data-mode="result">Result</button>
+          </div>
+        </div>
+      </div>
+      <div class="stage" id="stage">
+        <div class="frame" id="frame">
+          <img id="preview-img" alt="ASCII preview of the selected frame" hidden>
+          <video id="result-video" controls playsinline hidden></video>
+          <div class="stage-empty" id="stage-empty">
+            <pre aria-hidden="true">  .:-=+*#%@
+ vid2ascii</pre>
+          </div>
+        </div>
+      </div>
+      <div class="ramp" id="ramp" aria-label="Character ramp, dark to bright"></div>
+
+      <div class="timeline" id="timeline" aria-label="Timeline">
+        <div class="track" id="track">
+          <div class="strip" id="strip"></div>
+          <div class="shade left" id="shade-left"></div>
+          <div class="shade right" id="shade-right"></div>
+          <div class="range" id="range">
+            <button class="handle start" id="handle-start" aria-label="Range start"></button>
+            <button class="handle end" id="handle-end" aria-label="Range end"></button>
+          </div>
+          <div class="playhead" id="playhead"><span id="playhead-label"></span></div>
+        </div>
+        <div class="times num">
+          <span id="t-start">0:00.0</span>
+          <span id="t-range"></span>
+          <span id="t-end">0:00.0</span>
+        </div>
+      </div>
+
+      <div class="jobbar" id="jobbar" hidden>
+        <div class="job-line">
+          <span id="job-text"></span>
+          <button class="text-btn" id="cancel-btn">Cancel</button>
+        </div>
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="progress"><span></span></div>
+      </div>
+    </section>
+
+    <!-- Settings: every control updates the preview -->
+    <aside class="panel settings" aria-label="Settings">
+      <div class="panel-head">
+        <h2>Settings</h2>
+        <button class="text-btn" id="reset-btn">Reset</button>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><label for="cols-range">Columns</label>
+          <input class="num-input num" id="cols-num" type="number" min="20" max="400" step="1" aria-label="Columns"></div>
+        <input type="range" id="cols-range" min="20" max="400" step="1">
+        <p class="help">Characters across. More columns, finer detail.</p>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Colour</span>
+        <div class="segmented" id="color-seg" role="radiogroup" aria-label="Colour"></div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Characters</span>
+        <div class="segmented" id="charset-seg" role="radiogroup" aria-label="Character set"></div>
+        <input class="text-input" id="charset-custom" type="text" maxlength="96"
+               placeholder="Your own, dark to bright" aria-label="Custom characters, dark to bright">
+      </div>
+
+      <div class="field">
+        <span class="field-label">Contrast</span>
+        <div class="segmented" id="contrast-seg" role="radiogroup" aria-label="Contrast"></div>
+        <div class="contrast-factor" id="contrast-factor" hidden>
+          <input type="range" id="contrast-range" min="0.5" max="3" step="0.1" aria-label="Contrast factor">
+          <span class="num" id="contrast-value"></span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="aspect-select">Shape</label>
+        <select class="select" id="aspect-select"></select>
+        <input class="text-input" id="aspect-custom" type="text" placeholder="Width x height, e.g. 1080x1350"
+               aria-label="Custom shape" hidden>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="fps-input">Frame rate</label>
+        <div class="fps-row">
+          <div class="segmented" id="fps-seg" role="radiogroup" aria-label="Frame rate"></div>
+          <input class="num-input num" id="fps-input" type="number" min="1" max="60" step="1" aria-label="Frames per second">
+        </div>
+      </div>
+
+      <div class="field switch-field">
+        <div>
+          <label class="field-label" for="beat-switch">Beat flash</label>
+          <p class="help" id="beat-help">Characters flash and swap on the music's beats.</p>
+        </div>
+        <input type="checkbox" class="switch" id="beat-switch" role="switch">
+      </div>
+    </aside>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

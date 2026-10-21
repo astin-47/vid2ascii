@@ -327,3 +327,10 @@ def render_still(src: Path, t: float, opts: Options, *, long_side: int = 1920,
     cells = cache.frame(src, info, t, p.fps, layout, layout.out_w / layout.out_h)
     atlas = cache.atlas(p.font, p.chars, layout.cw, layout.ch)
     return Renderer(atlas, color=opts.color, contrast=opts.contrast).render(cells)
+
+
+def layout_for(src: Path, opts: Options, *, long_side: int = 1920,
+               cache: PreviewCache | None = None) -> Layout:
+    """The character grid and output size a render with these options would use."""
+    cache = cache or _default_cache
+    return plan(Path(src), opts, long_side=long_side, info=cache.info(Path(src))).layout
