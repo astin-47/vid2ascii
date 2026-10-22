@@ -193,7 +193,7 @@ function validity() {
   const colsOk = Number(state.options.cols) >= state.config.limits.cols[0];
   const fpsOk = Number(state.options.fps) > 0;
   $("fps-input").classList.toggle("invalid", !fpsOk);
-  return charsetOk && aspectOk && colsOk && fpsOk && !!state.clip;
+  return charsetOk && aspectOk && colsOk && fpsOk && !!state.clip && !state.rangeError;
 }
 
 function requestOptions() {
@@ -354,17 +354,71 @@ function drawTimeline() {
   head.style.left = `${p}%`;
   head.classList.toggle("flip", p > 85);
   $("playhead-label").textContent = clock(state.t);
-  $("t-start").textContent = clock(0);
-  $("t-end").textContent = clock(state.duration);
+  $("t-end").textContent = knownLength() ? clock(state.duration) : "–";
   $("range").hidden = !knownLength();
+  const editable = !!state.clip && knownLength();
+  for (const id of ["start-input", "end-input"]) $(id).disabled = !editable;
+  if (!state.clip) {
+    $("start-input").value = $("end-input").value = "";
+    $("t-range").textContent = "";
+    return;
+  }
   if (!knownLength()) {
-    $("t-end").textContent = "–";
+    $("start-input").value = "0:00.0";
+    $("end-input").value = "";
     $("t-range").textContent = "This file does not store its length; the render runs to its end, 60 s at most";
     return;
   }
-  const len = rangeLength();
-  const capped = len > state.config.limits.max_duration;
-  $("t-range").textContent = `Render ${clock(state.start)} – ${clock(state.end)} (${secs(Math.min(len, state.config.limits.max_duration))}${capped ? ", 60 s max" : ""})`;
+  // typed values stay as typed while the field has focus
+  if (document.activeElement !== $("start-input")) $("start-input").value = clock(state.start);
+  if (document.activeElement !== $("end-input")) $("end-input").value = clock(state.end);
+  if (!state.rangeError) {
+    $("t-range").classList.remove("invalid");
+    $("t-range").textContent = `= ${secs(rangeLength())}`;
+  }
+}
+
+// "1:10", "1:10.5", "0:01:10" or "70" -> seconds; NaN when it is not a time
+function parseTime(text) {
+  const parts = String(text).trim().replace(",", ".").split(":");
+  if (parts.length > 3 || parts.some((p) => !/^\d+(\.\d*)?$/.test(p))) return NaN;
+  return parts.reduce((total, p) => total * 60 + Number(p), 0);
+}
+
+function applyTypedRange() {
+  if (!state.clip || !knownLength()) return;
+  const s = parseTime($("start-input").value);
+  const e = parseTime($("end-input").value);
+  const max = state.config.limits.max_duration;
+  let error = null;
+  if (Number.isNaN(s) || Number.isNaN(e)) error = "Use a time like 1:10 or 70";
+  else if (e > state.duration + 0.05) error = `The video ends at ${clock(state.duration)}`;
+  else if (e - s < MIN_RANGE) error = "The end must come after the start";
+  else if (e - s > max + 1e-6) error = `A render can be ${max} s at most`;
+  $("start-input").classList.toggle("invalid", !!error && (Number.isNaN(s) || e - s < MIN_RANGE || e - s > max));
+  $("end-input").classList.toggle("invalid", !!error);
+  state.rangeError = error;
+  if (error) {
+    $("t-range").textContent = error;
+    $("t-range").classList.add("invalid");
+    updateRenderButton();
+    return;
+  }
+  $("start-input").classList.remove("invalid");
+  state.start = s;
+  state.end = Math.min(e, state.duration);
+  state.t = state.start;
+  drawTimeline();
+  updateFinding();
+  preview("full");
+}
+
+let rangeTimer = null;
+for (const id of ["start-input", "end-input"]) {
+  $(id).addEventListener("input", () => { clearTimeout(rangeTimer); rangeTimer = setTimeout(applyTypedRange, 600); });
+  $(id).addEventListener("change", () => { clearTimeout(rangeTimer); applyTypedRange(); });
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); clearTimeout(rangeTimer); applyTypedRange(); } });
+  $(id).addEventListener("blur", () => { if (!state.rangeError) drawTimeline(); });
 }
 
 let drag = null;
@@ -373,6 +427,7 @@ track.addEventListener("pointerdown", (e) => {
   if (!state.clip || !knownLength()) return;
   const handle = e.target.closest(".handle");
   drag = handle ? (handle.id === "handle-start" ? "start" : "end") : "playhead";
+  if (drag !== "playhead") clearRangeError();
   dragLength = Math.max(MIN_RANGE, state.end - state.start);
   track.setPointerCapture(e.pointerId);
   moveDrag(e.clientX);
@@ -387,6 +442,12 @@ track.addEventListener("pointerup", endDrag);
 track.addEventListener("pointercancel", endDrag);
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+function clearRangeError() {
+  state.rangeError = null;
+  for (const id of ["start-input", "end-input"]) $(id).classList.remove("invalid");
+  $("t-range").classList.remove("invalid");
+}
 
 function moveDrag(x) {
   const t = timeAt(x);
@@ -434,11 +495,80 @@ function clipButton(item, sub, onClick) {
   text.append(name, s);
   b.append(img, text);
   b.addEventListener("click", () => onClick(item));
-  li.append(b);
+  const trash = document.createElement("button");
+  trash.type = "button";
+  trash.className = "trash";
+  trash.title = "Move to the Recycle Bin";
+  trash.setAttribute("aria-label", `Move ${item.name} to the Recycle Bin`);
+  trash.innerHTML = TRASH_ICON;  // a fixed icon, never data
+  trash.addEventListener("click", (e) => { e.stopPropagation(); deleteItem(item); });
+  li.append(b, trash);
   return li;
 }
+
+const TRASH_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.5h6.6L12 4M6.8 6.8v4.4M9.2 6.8v4.4"/></svg>';
+
+function confirmDelete(item) {
+  const dialog = $("confirm-dialog");
+  $("confirm-text").textContent = `“${item.name}” will be moved to the Recycle Bin. You can restore it from there.`;
+  $("confirm-note").hidden = !item.id.startsWith("lib:");
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true });
+    dialog.returnValue = "cancel";
+    dialog.showModal();
+    $("confirm-ok").focus();
+  });
+}
+
+async function deleteItem(item) {
+  if (!(await confirmDelete(item))) return;
+  try {
+    await getJSON(`/api/files/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  if (state.clip && state.clip.id === item.id) clearClip();
+  if (state.result && state.result.id === item.id) clearResult();
+  await Promise.all([loadLibrary(), loadRenders()]);
+  toast(`Moved ${item.name} to the Recycle Bin.`);
+}
+
+function clearClip() {
+  clearRangeError();
+  state.clip = null;
+  state.duration = state.start = state.end = state.t = 0;
+  state.grid = state.output = null;
+  pv.seq++;                         // ignore any preview still on its way
+  pv.shown = pv.seq;
+  if (pv.url) URL.revokeObjectURL(pv.url);
+  pv.url = null;
+  $("preview-img").removeAttribute("src");
+  $("clip-title").textContent = "No video selected";
+  document.title = "vid2ascii";
+  $("strip").style.backgroundImage = "";
+  $("render-ms").textContent = "";
+  setStatus(null);
+  drawTimeline();
+  setMode(state.result ? state.mode : "preview");
+  updateRenderButton();
+}
+
+function clearResult() {
+  state.result = null;
+  $("result-video").pause();
+  $("result-video").removeAttribute("src");
+  $("result-video").load();
+  $("result-gif").removeAttribute("src");
+  $("download-btn").removeAttribute("href");
+  $("download-btn").setAttribute("aria-disabled", "true");
+  $("stage-mode").hidden = true;
+  updateRenderButton();
+  setMode("preview");
+}
 const sourceSub = (i) => `${short(i.duration)} · ${i.width}×${i.height}${i.has_audio ? "" : " · silent"}`;
-const renderSub = (i) => `${short(i.duration)} · ${i.width}×${i.height}`;
+const isGif = (item) => !!item && item.id.toLowerCase().endsWith(".gif");
+const renderSub = (i) => `${isGif(i) ? "GIF · " : ""}${short(i.duration)} · ${i.width}×${i.height}`;
 
 function markCurrent() {
   for (const b of document.querySelectorAll(".clip")) {
@@ -487,6 +617,7 @@ async function loadRenders() {
 }
 
 function selectClip(item) {
+  clearRangeError();
   state.clip = item;
   state.duration = item.duration || 0;
   state.start = 0;
@@ -565,7 +696,8 @@ function updateRenderButton() {
   const btn = $("render-btn");
   const busy = !!state.job;
   btn.disabled = busy || !state.clip || !validity();
-  btn.textContent = busy ? "Rendering…" : "Render";
+  btn.textContent = busy && state.jobKind === "render" ? "Rendering…" : "Render";
+  $("gif-btn").disabled = busy || !state.result || isGif(state.result);
 }
 
 async function startRender() {
@@ -581,8 +713,9 @@ async function startRender() {
   }
 }
 
-function watchJob(jobId, name) {
+function watchJob(jobId, name, kind = "render") {
   state.job = jobId;
+  state.jobKind = kind;
   updateRenderButton();
   $("jobbar").hidden = false;
   setProgress(0, frameCount(), 0, null, name, "queued");
@@ -599,6 +732,7 @@ function watchJob(jobId, name) {
     setStatus("done");
     await loadRenders();
     const item = { id: d.output_id, name: d.output_id.slice(4), width: d.width, height: d.height, duration: d.duration };
+    state.jobKind = null;
     showResult(item);
     toast(`Saved ${item.name} to the outputs folder.`);
   });
@@ -617,7 +751,11 @@ function watchJob(jobId, name) {
     setStatus("error");
     toast(JSON.parse(e.data).message, "error");
   });
-  events.addEventListener("cancelled", () => { finish(); setStatus("ready"); toast("Render cancelled. Nothing was saved."); });
+  events.addEventListener("cancelled", () => {
+    finish();
+    setStatus("ready");
+    toast(kind === "gif" ? "GIF export cancelled. Nothing was saved." : "Render cancelled. Nothing was saved.");
+  });
 }
 
 function setProgress(done, total, fps, eta, name, jobState) {
@@ -630,6 +768,12 @@ function setProgress(done, total, fps, eta, name, jobState) {
   if (jobState === "queued") {
     strong.textContent = "Waiting";
     text.append(strong, ` for the render before ${name}`);
+    return;
+  }
+  if (state.jobKind === "gif") {
+    strong.textContent = "Making the GIF";
+    text.append(strong, done ? ` · ${pct}%` : " · building its colour palette");
+    setStatus("running", "Making GIF");
     return;
   }
   strong.textContent = `${pct}%`;
@@ -648,11 +792,17 @@ $("cancel-btn").addEventListener("click", async () => {
 function showResult(item) {
   state.result = item;
   const video = $("result-video");
-  if (!video.src.endsWith(fileUrl(item.id, "video"))) video.src = fileUrl(item.id, "video");
+  if (isGif(item)) {
+    video.pause();
+    $("result-gif").src = fileUrl(item.id, "video");
+  } else if (!video.src.endsWith(fileUrl(item.id, "video"))) {
+    video.src = fileUrl(item.id, "video");
+  }
   const dl = $("download-btn");
   dl.href = fileUrl(item.id, "download");
   dl.setAttribute("aria-disabled", "false");
   $("stage-mode").hidden = false;
+  updateRenderButton();
   if (item.width && item.height) {
     frameRatio = item.width / item.height;
     fitFrame();
@@ -663,7 +813,8 @@ function showResult(item) {
 function setMode(mode) {
   state.mode = mode;
   const result = mode === "result" && state.result;
-  $("result-video").hidden = !result;
+  $("result-video").hidden = !result || isGif(state.result);
+  $("result-gif").hidden = !result || !isGif(state.result);
   $("preview-img").hidden = !!result || !pv.url;
   $("stage-empty").hidden = !!result || !!pv.url;
   $("ramp").style.visibility = result ? "hidden" : "visible";
@@ -760,6 +911,54 @@ $("reset-btn").addEventListener("click", () => {
   preview("full");
 });
 $("render-btn").addEventListener("click", startRender);
+
+const GIF_LABELS = { small: "Small", medium: "Medium", full: "Full size" };
+let gifChoice = "small";
+function buildGifOptions() {
+  const box = $("gif-options");
+  box.replaceChildren();
+  for (const [name, { width, fps }] of Object.entries(state.config.gif_sizes)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "gif-option";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(name === gifChoice));
+    const w = width || state.result.width;
+    const h = Math.round((state.result.height / state.result.width) * w);
+    const label = document.createElement("strong");
+    label.textContent = GIF_LABELS[name] || name;
+    const detail = document.createElement("span");
+    detail.className = "gif-detail";
+    detail.textContent = `${w} × ${h} · ${fps} fps`;
+    b.append(label, detail);
+    b.addEventListener("click", () => {
+      gifChoice = name;
+      for (const o of box.children) o.setAttribute("aria-checked", String(o === b));
+    });
+    box.append(b);
+  }
+}
+$("gif-btn").addEventListener("click", () => {
+  if (!state.result || isGif(state.result) || state.job) return;
+  gifChoice = "small";
+  buildGifOptions();
+  const dialog = $("gif-dialog");
+  dialog.returnValue = "cancel";
+  dialog.showModal();
+});
+$("gif-dialog").addEventListener("close", async () => {
+  if ($("gif-dialog").returnValue !== "ok" || !state.result) return;
+  const source = state.result;
+  try {
+    const { job_id } = await getJSON("/api/export/gif", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: source.id, size: gifChoice }),
+    });
+    watchJob(job_id, source.name, "gif");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
 $("download-btn").addEventListener("click", (e) => {
   if ($("download-btn").getAttribute("aria-disabled") === "true") e.preventDefault();
 });
@@ -768,7 +967,7 @@ $("download-btn").addEventListener("click", (e) => {
 window.addEventListener("keydown", (e) => {
   const typing = e.target.closest("input, select, textarea");
   if (typing && !(e.target.type === "range")) return;
-  if (e.key === " " && state.mode === "result" && state.result) {
+  if (e.key === " " && state.mode === "result" && state.result && !isGif(state.result)) {
     e.preventDefault();
     const v = $("result-video");
     if (v.paused) v.play(); else v.pause();

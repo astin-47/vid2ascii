@@ -157,10 +157,18 @@ other video onto the page to add it.
 
 - **Preview** updates as you change a setting (columns, colour, characters,
   contrast, shape, frame rate, beat flash). Drag on the filmstrip to look at any
-  moment; drag the green handles to choose the part to render (60 s at most).
+  moment.
+- **Choose the part to render** (60 s at most) by dragging the green handles, or
+  type exact times in the *From* and *to* boxes: `1:10`, `1:10.5` or `70`. On a
+  longer video the 60 s window slides along with the handles.
 - **Render** runs in the background with live progress and a Cancel button.
   The finished video plays in the page, has a Download button, and is saved to
   `outputs/`. Starting another render while one runs queues it.
+- **GIF**: on a finished render, the *GIF* button exports it as an animated GIF:
+  Small (480 px wide, 12 fps), Medium (720 px, 15 fps) or Full size (15 fps).
+  GIFs are saved to `outputs/` next to the video.
+- **Delete**: hover a video, upload or render and click the bin icon. After you
+  confirm, the file goes to the Recycle Bin, so it can be restored.
 - Keys: `←`/`→` move one frame, `Shift+←`/`→` one second, `Space` plays the result.
 
 Options for `serve`:

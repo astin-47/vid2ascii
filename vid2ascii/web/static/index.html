@@ -24,6 +24,7 @@
     </div>
     <div class="top-actions">
       <a class="btn" id="download-btn" aria-disabled="true" download>Download</a>
+      <button class="btn" id="gif-btn" disabled title="Export the finished video as an animated GIF">GIF</button>
       <button class="btn primary" id="render-btn" disabled>Render</button>
     </div>
   </header>
@@ -72,6 +73,7 @@
         <div class="frame" id="frame">
           <img id="preview-img" alt="ASCII preview of the selected frame" hidden>
           <video id="result-video" controls playsinline hidden></video>
+          <img id="result-gif" alt="The exported GIF" hidden>
           <div class="stage-empty" id="stage-empty">
             <pre aria-hidden="true">  .:-=+*#%@
  vid2ascii</pre>
@@ -92,9 +94,14 @@
           <div class="playhead" id="playhead"><span id="playhead-label"></span></div>
         </div>
         <div class="times num">
-          <span id="t-start">0:00.0</span>
+          <label class="time-field">From
+            <input class="time-input num" id="start-input" inputmode="decimal" autocomplete="off" aria-label="Render from">
+          </label>
+          <label class="time-field">to
+            <input class="time-input num" id="end-input" inputmode="decimal" autocomplete="off" aria-label="Render to">
+          </label>
           <span id="t-range"></span>
-          <span id="t-end">0:00.0</span>
+          <span class="t-total">of <span id="t-end">0:00.0</span></span>
         </div>
       </div>
 
@@ -166,6 +173,30 @@
       </div>
     </aside>
   </main>
+
+  <dialog class="dialog" id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <h2 id="confirm-title">Move to the Recycle Bin?</h2>
+      <p id="confirm-text"></p>
+      <p class="help" id="confirm-note" hidden>This is the original in your Videos folder.</p>
+      <div class="dialog-actions">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn danger" value="ok" id="confirm-ok">Move to Recycle Bin</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="gif-dialog" aria-labelledby="gif-title">
+    <form method="dialog">
+      <h2 id="gif-title">Export as GIF</h2>
+      <p class="help">GIFs are much larger than videos. Small suits chats and posts.</p>
+      <div class="gif-options" id="gif-options" role="radiogroup" aria-label="GIF size"></div>
+      <div class="dialog-actions">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" value="ok">Export GIF</button>
+      </div>
+    </form>
+  </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </body>
