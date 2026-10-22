@@ -223,3 +223,7 @@ No temporary frame files are written.
   failed file is reported, the rest continue, and the exit code is 1.
 - If the input has no audio the output is silent, and `--beat` is ignored with a
   warning.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
