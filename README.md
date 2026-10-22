@@ -1,5 +1,9 @@
 # vid2ascii
 
+**Turn any video into living ASCII art, with its sound, from a local web page or the command line.**
+
+![vid2ascii's web interface: a fractal zoom turned into colour ASCII, tuned live and rendered](docs/demo/web-ui.gif)
+
 vid2ascii converts a local video into an ASCII-character video. Every frame is
 reduced to a grid of characters that is drawn with a monospace font, and the
 original audio is carried over to the result. Output is an H.264 MP4 with AAC
@@ -152,8 +156,6 @@ rendering it, with no command line needed:
 It starts a server on `127.0.0.1` (nothing is reachable from other machines) and
 opens your browser. The page lists the videos in your `Videos` folder; drop any
 other video onto the page to add it.
-
-![The vid2ascii web interface](docs/proof/web-ui.jpg)
 
 - **Preview** updates as you change a setting (columns, colour, characters,
   contrast, shape, frame rate, beat flash). Drag on the filmstrip to look at any
