@@ -2,7 +2,7 @@
 
 **Turn any video into living ASCII art, with its sound, from a local web page or the command line.**
 
-![vid2ascii's web interface: a fractal zoom turned into colour ASCII, tuned live and rendered](docs/demo/web-ui.gif)
+![vid2ascii's web interface: a rainy gothic city at night, searchlight and bats, turned into green ASCII, tuned live and rendered](docs/demo/web-ui.gif)
 
 vid2ascii converts a local video into an ASCII-character video. Every frame is
 reduced to a grid of characters that is drawn with a monospace font, and the
