@@ -20,7 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .. import InputError, Vid2AsciiError
 from ..atlas import CHARSETS
-from ..engine import COLORS, MAX_DURATION, Options, layout_for, render_still
+from ..engine import COLORS, GIF_SIZES, MAX_DURATION, Options, layout_for, render_still
 from ..frames import ASPECTS
 from . import files as files_mod
 from .files import FileStore
@@ -52,8 +52,8 @@ def _error(status: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
-def create_app(library: Path, workdir: Path) -> FastAPI:
-    store = FileStore(library, workdir)
+def create_app(library: Path, workdir: Path, trash=None) -> FastAPI:
+    store = FileStore(library, workdir, trash=trash)
     jobs = JobQueue(store)
 
     @asynccontextmanager
@@ -114,6 +114,7 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
             "colors": list(COLORS),
             "charsets": CHARSETS,
             "aspects": ["source", *ASPECTS],
+            "gif_sizes": {name: {"width": w, "fps": f} for name, (w, f) in GIF_SIZES.items()},
             "limits": {"max_duration": MAX_DURATION,
                        "max_upload_bytes": files_mod.MAX_UPLOAD_BYTES,
                        "cols": [20, 400]},
@@ -159,6 +160,18 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
     @app.get("/api/outputs")
     def outputs():
         return {"items": store.list_outputs()}
+
+    @app.delete("/api/files/{file_id:path}")
+    def delete_file(file_id: str):
+        path = lookup(file_id)
+        if jobs.in_use(path):
+            raise ApiError(409, "this file is being rendered; cancel the render first")
+        try:
+            store.trash(file_id)
+        except OSError as exc:
+            raise ApiError(500, f"could not move {store.display_name(path)} to the Recycle Bin: "
+                                f"{exc}") from None
+        return {"ok": True}
 
     @app.get("/api/files/{file_id:path}/thumb")
     def thumb(file_id: str):
@@ -219,6 +232,12 @@ def create_app(library: Path, workdir: Path) -> FastAPI:
         lookup(file_id)
         opts = Options.from_dict(body.get("options") or {})
         return {"job_id": jobs.submit(file_id, opts)}
+
+    @app.post("/api/export/gif")
+    def export_gif(body: dict):
+        file_id = str(body.get("id", ""))
+        lookup(file_id)
+        return {"job_id": jobs.submit_gif(file_id, str(body.get("size", "small")))}
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: str):

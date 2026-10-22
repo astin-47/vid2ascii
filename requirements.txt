@@ -5,3 +5,4 @@ librosa
 fastapi
 uvicorn
 python-multipart
+send2trash

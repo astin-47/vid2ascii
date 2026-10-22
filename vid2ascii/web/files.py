@@ -9,6 +9,7 @@ import time
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import send2trash
 from PIL import Image
 
 from .. import InputError
@@ -16,11 +17,12 @@ from ..engine import VIDEO_EXTS
 from ..frames import probe
 
 MAX_UPLOAD_BYTES = 2 * 1024 ** 3
+OUTPUT_EXTS = VIDEO_EXTS | {".gif"}
 _SEP = "__"  # uploads are stored as <uuid>__<original name>
 
 
 class FileStore:
-    def __init__(self, library: Path, workdir: Path):
+    def __init__(self, library: Path, workdir: Path, trash=None):
         self.library = Path(library)
         workdir = Path(workdir)
         self.uploads = workdir / "work" / "uploads"
@@ -29,6 +31,7 @@ class FileStore:
         for folder in (self.uploads, self.thumbs, self.outputs):
             folder.mkdir(parents=True, exist_ok=True)
         self._roots = {"lib": self.library, "up": self.uploads, "out": self.outputs}
+        self.trash_fn = trash or send2trash.send2trash  # the Recycle Bin, never a hard delete
         self._probe_cache: dict = {}
         self._lock = threading.Lock()
         self._strip_locks: dict[str, threading.Lock] = {}
@@ -52,7 +55,8 @@ class FileStore:
             inside = resolved.is_relative_to(root.resolve())
         except OSError:
             raise KeyError(file_id) from None
-        if not inside or not resolved.is_file() or resolved.suffix.lower() not in VIDEO_EXTS:
+        allowed = OUTPUT_EXTS if kind == "out" else VIDEO_EXTS
+        if not inside or not resolved.is_file() or resolved.suffix.lower() not in allowed:
             raise KeyError(file_id)
         return resolved
 
@@ -85,10 +89,10 @@ class FileStore:
                 "duration": info.duration, "width": info.width, "height": info.height,
                 "fps": info.fps, "has_audio": info.has_audio}
 
-    def _list(self, folder: Path) -> list[dict]:
+    def _list(self, folder: Path, exts=VIDEO_EXTS) -> list[dict]:
         items = []
         for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTS \
+            if path.is_file() and path.suffix.lower() in exts \
                     and ".partial." not in path.name:
                 try:
                     items.append(self.describe(path))
@@ -103,12 +107,18 @@ class FileStore:
         return self._list(self.uploads)
 
     def list_outputs(self) -> list[dict]:
-        items = self._list(self.outputs)
+        items = self._list(self.outputs, OUTPUT_EXTS)
         for item in items:
             item["created"] = self.resolve(item["id"]).stat().st_mtime
         return sorted(items, key=lambda i: i["created"], reverse=True)
 
     # ---- writing -----------------------------------------------------------
+    def trash(self, file_id: str) -> Path:
+        """Move the file behind an id to the Recycle Bin (KeyError for unknown ids)."""
+        path = self.resolve(file_id)
+        self.trash_fn(path)
+        return path
+
     def new_upload_path(self, filename: str) -> Path:
         name = Path(filename or "upload.mp4").name
         name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name) or "upload.mp4"
@@ -116,12 +126,13 @@ class FileStore:
             raise InputError(f"unsupported file type: {name}")
         return self.uploads / f"{uuid.uuid4().hex}{_SEP}{name}"
 
-    def next_output_path(self, stem: str) -> Path:
-        candidate = self.outputs / f"{stem}_ascii.mp4"
+    def next_output_path(self, stem: str, ext: str = ".mp4", tag: str = "_ascii") -> Path:
+        """outputs/<stem><tag><ext>, then <stem><tag>_2<ext>, ... never an existing file."""
+        candidate = self.outputs / f"{stem}{tag}{ext}"
         n = 2
         while candidate.exists() or candidate.with_name(
                 candidate.stem + ".partial" + candidate.suffix).exists():
-            candidate = self.outputs / f"{stem}_ascii_{n}.mp4"
+            candidate = self.outputs / f"{stem}{tag}_{n}{ext}"
             n += 1
         return candidate
 

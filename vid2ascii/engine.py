@@ -22,6 +22,8 @@ from .render import AutoContrast, Renderer
 MAX_DURATION = 60.0
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 COLORS = ("original", "green", "amber", "mono")
+# GIF export sizes: (width in px, or None to keep the video size; frames per second)
+GIF_SIZES = {"small": (480, 12), "medium": (720, 15), "full": (None, 15)}
 
 Progress = Callable[[int, int], None]
 
@@ -334,3 +336,60 @@ def layout_for(src: Path, opts: Options, *, long_side: int = 1920,
     """The character grid and output size a render with these options would use."""
     cache = cache or _default_cache
     return plan(Path(src), opts, long_side=long_side, info=cache.info(Path(src))).layout
+
+
+def to_gif(src: Path, dst: Path, size: str = "small", *, on_progress: Progress | None = None,
+           cancel: threading.Event | None = None) -> ConvertResult:
+    """Convert a finished video to an animated GIF with a palette made for its colours."""
+    if size not in GIF_SIZES:
+        raise ValueError(f"invalid GIF size: {size!r}")
+    width, fps = GIF_SIZES[size]
+    src, dst = Path(src), Path(dst)
+    if cancel is not None and cancel.is_set():
+        raise Cancelled("cancelled")
+    info = probe(src)
+    total = max(1, round(info.duration * fps)) if info.duration > 0 else 1
+    scale = f"scale={width}:-1:flags=lanczos," if width else ""
+    graph = (f"[0:v]fps={fps},{scale}split[a][b];[a]palettegen=stats_mode=diff[p];"
+             f"[b][p]paletteuse=dither=bayer:bayer_scale=3")
+    partial = dst.with_name(dst.stem + ".partial" + dst.suffix)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y", "-v", "error", "-nostdin", "-protocol_whitelist", "file,pipe",
+           "-i", str(src), "-an", "-filter_complex", graph, "-loop", "0",
+           "-progress", "pipe:1", "-nostats", str(partial)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    tail = deque(maxlen=15)
+
+    def drain():
+        for line in proc.stderr:
+            tail.append(line.decode(errors="replace").rstrip())
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    try:
+        try:
+            for raw in proc.stdout:
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled("cancelled")
+                line = raw.decode(errors="replace").strip()
+                if line.startswith("frame=") and on_progress is not None:
+                    done = int(line.split("=", 1)[1] or 0)
+                    on_progress(min(done, total), total)
+        except BaseException:
+            proc.kill()
+            raise
+        finally:
+            proc.wait()
+            reader.join()
+        if proc.returncode != 0 or not partial.exists():
+            details = "\n".join(tail)
+            raise Vid2AsciiError(f"GIF conversion failed for {src.name}:\n{details}")
+        os.replace(partial, dst)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    out = probe(dst)
+    frames = max(1, round(out.duration * fps)) if out.duration > 0 else total
+    if on_progress is not None:
+        on_progress(frames, frames)
+    return ConvertResult(dst, out.width, out.height, out.duration, frames)

@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from .. import Cancelled
-from ..engine import Options, convert
+from ..engine import GIF_SIZES, Options, convert, to_gif
 from .files import FileStore
 
 TERMINAL = ("done", "error", "cancelled")
@@ -27,6 +27,10 @@ class Job:
     result: dict | None = None
     message: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
+    kind: str = "render"      # "render" or "gif"
+    gif_size: str = ""
+    source: str = ""          # the file read
+    target: str = ""          # the file being written, once running
 
     def snapshot(self) -> dict:
         return {"state": self.state, "done": self.done, "total": self.total,
@@ -45,13 +49,34 @@ class JobQueue:
         self._worker.start()
 
     def submit(self, file_id: str, opts: Options) -> str:
-        self.files.resolve(file_id)  # KeyError for unknown ids
+        source = self.files.resolve(file_id)  # KeyError for unknown ids
         opts.validate()
-        job = Job(uuid.uuid4().hex[:12], file_id, opts)
+        job = Job(uuid.uuid4().hex[:12], file_id, opts, source=str(source))
         with self._lock:
             self._jobs[job.id] = job
         self._queue.put(job)
         return job.id
+
+    def submit_gif(self, file_id: str, size: str) -> str:
+        source = self.files.resolve(file_id)  # KeyError for unknown ids
+        if not file_id.startswith("out:") or source.suffix.lower() != ".mp4":
+            raise ValueError("only finished renders can be exported as a GIF")
+        if size not in GIF_SIZES:
+            raise ValueError(f"invalid GIF size: {size!r}")
+        job = Job(uuid.uuid4().hex[:12], file_id, Options(), kind="gif", gif_size=size,
+                  source=str(source))
+        with self._lock:
+            self._jobs[job.id] = job
+        self._queue.put(job)
+        return job.id
+
+    def in_use(self, path) -> bool:
+        """True when a queued or running job reads or writes this file."""
+        target = str(path)
+        with self._lock:
+            jobs = list(self._jobs.values())
+        return any(job.state not in TERMINAL and target in (job.source, job.target)
+                   for job in jobs)
 
     def get(self, job_id: str) -> Job:
         with self._lock:
@@ -100,8 +125,14 @@ class JobQueue:
         try:
             src = self.files.resolve(job.file_id)
             stem = self.files.display_name(src).rsplit(".", 1)[0]
-            dst = self.files.next_output_path(stem)
-            result = convert(src, dst, job.options, on_progress=progress, cancel=job.cancel)
+            if job.kind == "gif":
+                dst = self.files.next_output_path(stem, ".gif", f"_{job.gif_size}")
+                job.target = str(dst.resolve())
+                result = to_gif(src, dst, job.gif_size, on_progress=progress, cancel=job.cancel)
+            else:
+                dst = self.files.next_output_path(stem)
+                job.target = str(dst.resolve())
+                result = convert(src, dst, job.options, on_progress=progress, cancel=job.cancel)
         except Cancelled:
             job.state = "cancelled"
         except Exception as exc:  # report every failure to the page
